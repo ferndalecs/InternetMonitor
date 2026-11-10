@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10); --header: #10283f; --header-ink: #ffffff;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --good-wash: #e9f6e9; --warning-wash: #fdf3d9; --critical-wash: #fbe9e9;
+    --h0: #efeeea; --h1: #f6d5d2; --h2: #eda29d; --h3: #df6a66; --h4: #b52e2e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --header: #10283f;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+      --good-wash: #16291a; --warning-wash: #2e2710; --critical-wash: #331a1a;
+      --h0: #262624; --h1: #4a2222; --h2: #7a2e2e; --h3: #b54040; --h4: #e66767;
+    }
+  }
+  @media print {
+    :root {
+      color-scheme: light;
+      --page: #ffffff; --surface: #ffffff; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+      --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.18);
+      --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+      --good-wash: #e9f6e9; --warning-wash: #fdf3d9; --critical-wash: #fbe9e9;
+      --h0: #efeeea; --h1: #f6d5d2; --h2: #eda29d; --h3: #df6a66; --h4: #b52e2e;
+    }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .card, .tile, .banner { break-inside: avoid; }
+    #tip { display: none !important; }
+    body { padding: 0 !important; }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--page); }
+  body { margin: 0; padding: 0 16px 40px; background: var(--page); color: var(--ink);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header.top { background: var(--header); color: var(--header-ink); margin: 0 -16px 24px; padding: 28px 16px 26px; }
+  header.top .org { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; opacity: .75; margin-bottom: 4px; }
+  header.top h1 { font-size: 26px; line-height: 1.2; margin: 0 0 10px; font-weight: 600; }
+  header.top .sub { display: flex; flex-wrap: wrap; gap: 4px 28px; font-size: 13px; opacity: .88; }
+  header.top .sub b { font-weight: 600; }
+
+  .banner { display: flex; gap: 16px; padding: 18px 20px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 16px; background: var(--surface); }
+  .banner.good { background: var(--good-wash); } .banner.warning { background: var(--warning-wash); } .banner.critical { background: var(--critical-wash); }
+  .banner .icon { flex: 0 0 36px; height: 36px; }
+  .banner h2 { margin: 3px 0 6px; font-size: 19px; font-weight: 600; }
+  .banner p { margin: 0 0 6px; color: var(--ink2); max-width: 86ch; }
+  .banner p:last-child { margin-bottom: 0; }
+
+  .tiles { display: grid; grid-template-columns: 1.5fr repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .tile .label { color: var(--ink2); font-size: 13px; }
+  .tile .value { font-size: 26px; font-weight: 600; line-height: 1.25; margin-top: 2px; }
+  .tile.hero .value { font-size: 48px; line-height: 1.1; }
+  .tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  @media (max-width: 860px) { .tiles { grid-template-columns: repeat(2, 1fr); } .tile.hero { grid-column: 1 / -1; } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+  .card h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .card .desc { color: var(--ink2); font-size: 13px; margin: 2px 0 12px; max-width: 90ch; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .two > .card { min-width: 0; }
+  @media (max-width: 860px) { .two { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink2); margin: 0 0 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .ln { width: 16px; height: 2px; border-radius: 1px; display: inline-block; }
+  .legend .grp { color: var(--muted); }
+
+  svg { display: block; width: 100%; overflow: visible; }
+  svg text { font: 11.5px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  svg:focus { outline: 2px solid var(--s1); outline-offset: 4px; border-radius: 4px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--ink2); font-size: 12px; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--axis); white-space: nowrap; }
+  td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.nowrap { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.small, .small { color: var(--ink2); font-size: 12.5px; }
+  .scroll { overflow-x: auto; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+  .dot.s1 { background: var(--warning); } .dot.s2 { background: var(--critical); } .dot.s0 { background: var(--good); }
+  .dot.s1 { border-radius: 2px; }
+  .dot.s9 { background: var(--axis); }
+
+  .bars { display: grid; grid-template-columns: max-content 1fr; gap: 10px 12px; align-items: center; font-size: 13px; }
+  .bars .track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .bars .bar { height: 14px; background: var(--s1); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .bars .val { color: var(--ink2); white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+
+  .heat { display: grid; grid-template-columns: max-content repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 11.5px; color: var(--muted); align-items: center; }
+  .heat .day { padding-right: 8px; white-space: nowrap; color: var(--ink2); }
+  .heat .hr { text-align: left; font-variant-numeric: tabular-nums; height: 16px; }
+  .heat .cell { height: 18px; border-radius: 3px; }
+  .heat .cell.none { box-shadow: inset 0 0 0 1px var(--grid); }
+  .heat .cell:focus { outline: 2px solid var(--s1); outline-offset: 1px; }
+  .b0 { background: var(--h0); } .b1 { background: var(--h1); } .b2 { background: var(--h2); } .b3 { background: var(--h3); } .b4 { background: var(--h4); }
+
+  details { margin-top: 12px; }
+  .trace { padding: 12px 0; border-top: 1px solid var(--grid); }
+  .trace:first-of-type { border-top: 0; padding-top: 0; }
+  .trace p { margin: 4px 0 0; max-width: 90ch; }
+  .trace details { margin-top: 6px; }
+  table.narrow { width: auto; min-width: 320px; }
+  summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
+  details .scroll { max-height: 340px; overflow: auto; margin-top: 8px; }
+  dl.env { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; margin: 0; font-size: 13px; }
+  dl.env dt { color: var(--ink2); } dl.env dd { margin: 0; overflow-wrap: anywhere; }
+  .howto p, .howto li { color: var(--ink2); font-size: 13px; max-width: 90ch; }
+  .howto ul { padding-left: 18px; margin: 6px 0; }
+  .howto b { color: var(--ink); font-weight: 600; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 22px; }
+  .empty { padding: 30px 0; color: var(--ink2); text-align: center; }
+
+  #tip { position: fixed; z-index: 10; pointer-events: none; display: none; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 9px 11px; font-size: 12.5px; max-width: 300px; }
+  #tip .t { font-weight: 600; margin-bottom: 4px; }
+  #tip .r { display: flex; align-items: center; gap: 7px; color: var(--ink2); white-space: nowrap; }
+  #tip .r b { color: var(--ink); font-weight: 600; margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="tip" role="status"></div>
+<noscript><p style="padding:24px">This report needs JavaScript to draw its charts. Open it in Microsoft Edge, Chrome or Firefox.</p></noscript>
+<script>
+"use strict";
+var D = "{{DATA}}";
+
+/* ---------- tiny DOM helpers (everything goes in as text, never as HTML) ---------- */
+function el(tag, attrs, kids) {
+  var e = document.createElement(tag), k;
+  if (attrs) for (k in attrs) { if (k === "text") e.textContent = attrs[k]; else if (k === "cls") e.className = attrs[k]; else e.setAttribute(k, attrs[k]); }
+  (kids || []).forEach(function (c) { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+  return e;
+}
+var NS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs, text) {
+  var e = document.createElementNS(NS, tag), k;
+  for (k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function dur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec / 60) + "m " + ("0" + sec % 60).slice(-2) + "s";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h " + ("0" + Math.floor(sec % 3600 / 60)).slice(-2) + "m";
+  return Math.floor(sec / 86400) + "d " + Math.floor(sec % 86400 / 3600) + "h";
+}
+function slotName(sec) {
+  if (sec < 60) return sec + "-second";
+  if (sec < 3600) return (sec / 60) + "-minute";
+  if (sec < 86400) return (sec / 3600) + "-hour";
+  return (sec / 86400) + "-day";
+}
+function p2(n) { return ("0" + n).slice(-2); }
+var MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+/* Times arrive as local wall-clock time encoded as UTC, so read them back with getUTC*. */
+function clock(ms, secs) { var d = new Date(ms); return p2(d.getUTCHours()) + ":" + p2(d.getUTCMinutes()) + (secs ? ":" + p2(d.getUTCSeconds()) : ""); }
+function dayOf(ms) { var d = new Date(ms); return d.getUTCDate() + " " + MON[d.getUTCMonth()]; }
+function num(n) { return n == null ? "–" : n.toLocaleString("en-GB"); }
+
+/* ---------- tooltip ---------- */
+var tip = document.getElementById("tip");
+function showTip(x, y, title, rows) {
+  tip.textContent = "";
+  tip.appendChild(el("div", { cls: "t", text: title }));
+  rows.forEach(function (r) {
+    var row = el("div", { cls: "r" });
+    if (r.color) { var k = el("span", { cls: r.line ? "ln" : "sw" }); k.style.background = r.color; row.appendChild(k); }
+    row.appendChild(document.createTextNode(r.label));
+    if (r.value != null) row.appendChild(el("b", { text: r.value }));
+    tip.appendChild(row);
+  });
+  tip.style.display = "block";
+  var w = tip.offsetWidth, h = tip.offsetHeight;
+  var left = x + 14; if (left + w > window.innerWidth - 8) left = x - w - 14;
+  var top = y + 14; if (top + h > window.innerHeight - 8) top = y - h - 14;
+  tip.style.left = Math.max(8, left) + "px"; tip.style.top = Math.max(8, top) + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+var SERIES = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"].map(function (v) { return "var(" + v + ")"; });
+var app = document.getElementById("app");
+var wrap = el("div", { cls: "wrap" });
+
+/* ---------- header ---------- */
+(function () {
+  var m = D.meta, s = D.summary;
+  var sub = el("div", { cls: "sub" }, [
+    el("span", {}, [el("b", { text: D.mode === "fleet" ? "Covers: " : "Computer: " }), m.computer]),
+    s ? el("span", {}, [el("b", { text: "Period: " }), s.start + " → " + s.end]) : null,
+    el("span", {}, [el("b", { text: "Scope: " }), m.period]),
+    el("span", {}, [el("b", { text: "Generated: " }), m.generated])
+  ]);
+  var head = el("header", { cls: "top" }, [el("div", { cls: "wrap" }, [
+    m.org ? el("div", { cls: "org", text: m.org }) : null,
+    el("h1", { text: m.title || "Internet Connectivity Report" }), sub
+  ])]);
+  app.appendChild(head);
+  app.appendChild(wrap);
+})();
+
+function card(title, desc) {
+  var c = el("section", { cls: "card" }, [el("h3", { text: title }), desc ? el("p", { cls: "desc", text: desc }) : null]);
+  wrap.appendChild(c);
+  return c;
+}
+
+function iconFor(level) {
+  var s = sv("svg", { viewBox: "0 0 36 36", width: 36, height: 36, "aria-hidden": "true" });
+  s.setAttribute("class", "icon");
+  var col = level === "good" ? "var(--good)" : level === "warning" ? "var(--warning)" : "var(--critical)";
+  s.appendChild(sv("circle", { cx: 18, cy: 18, r: 17, fill: col }));
+  var ink = level === "warning" ? "#0b0b0b" : "#ffffff";
+  var d = level === "good" ? "M10.5 18.5l5 5 10-11" : level === "warning" ? "M18 9.5v11M18 25.5v.5" : "M12 12l12 12M24 12L12 24";
+  s.appendChild(sv("path", { d: d, fill: "none", stroke: ink, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+  return s;
+}
+
+if (D.empty) {
+  wrap.appendChild(el("section", { cls: "card" }, [el("div", { cls: "empty", text: "No monitoring data was recorded for this period." })]));
+} else if (D.mode === "fleet") {
+  renderBanner(); renderFleet();
+} else {
+  renderBanner(); renderTiles(); renderTimeline(); renderCauseAndHeat(); renderIncidents(); renderTraces(); renderWifi(); renderChecks();
+}
+if (D.mode !== "fleet") renderEnvironment();
+wrap.appendChild(el("footer", { text: "Internet Monitor " + D.meta.version + (D.meta.logFiles && D.meta.logFiles.length ? " · Source data: " + D.meta.logFiles.join(", ") : "") }));
+
+/* ---------- findings ---------- */
+function renderBanner() {
+  var body = el("div", {}, [el("h2", { text: D.headline })]);
+  D.verdict.forEach(function (t) { body.appendChild(el("p", { text: t })); });
+  wrap.appendChild(el("section", { cls: "banner " + D.level }, [iconFor(D.level), body]));
+}
+
+/* ---------- headline numbers ---------- */
+function renderTiles() {
+  var s = D.summary;
+  function tile(label, value, note, hero) {
+    return el("div", { cls: "tile" + (hero ? " hero" : "") }, [
+      el("div", { cls: "label", text: label }), el("div", { cls: "value", text: value }), note ? el("div", { cls: "note", text: note }) : null]);
+  }
+  wrap.appendChild(el("div", { cls: "tiles" }, [
+    tile("Availability", s.availability + "%", "of " + s.monitored + " monitored", true),
+    tile("Outages", String(s.outages), s.degradedCount ? s.degradedCount + " degraded episode" + (s.degradedCount === 1 ? "" : "s") : "no degraded episodes"),
+    tile("Total downtime", s.downSec > 0 ? s.downtime : "none", s.degradedSec >= 1 ? "plus " + s.degraded + " degraded" : ""),
+    tile("Longest outage", s.longest, s.longestAt ? "started " + s.longestAt : ""),
+    tile("Typical response", s.medianMs == null ? "–" : s.medianMs + " ms", s.p95Ms == null ? "" : "95% of checks under " + num(s.p95Ms) + " ms")
+  ]));
+}
+
+/* ---------- timeline: status strip + response-time lines on one time axis ---------- */
+function renderTimeline() {
+  var T = D.timeline, n = T.on.length, stepMs = T.step * 1000, tEnd = T.t0 + n * stepMs;
+  var multiDay = dayOf(T.t0) !== dayOf(tEnd - 1);
+  var c = card("Connection status and response time",
+    "Top strip: whether web access was working. Lines: how long each test website took to answer (median per " + slotName(T.step) + " slot)."
+    + (T.wifi ? " Lower chart: " + T.wifiLabel.replace(" (", ", ").replace(")", "").toLowerCase().replace("wi-fi", "Wi-Fi") + "." : "") + " Hover or use the arrow keys for exact figures.");
+
+  var lg = el("div", { cls: "legend" });
+  [["Online", "var(--good)"], ["Degraded", "var(--warning)"], ["Outage", "var(--critical)"], ["No data", "var(--grid)"]].forEach(function (x) {
+    var k = el("span", { cls: "sw" }); k.style.background = x[1]; lg.appendChild(el("span", {}, [k, x[0]]));
+  });
+  if (T.series.length > 1) {
+    lg.appendChild(el("span", { cls: "grp", text: "│ Response time:" }));
+    T.series.forEach(function (s, i) { var k = el("span", { cls: "ln" }); k.style.background = SERIES[i % 8]; lg.appendChild(el("span", {}, [k, s.name])); });
+  }
+  c.appendChild(lg);
+
+  var holder = el("div"); c.appendChild(holder);
+  var state = [];
+  for (var i = 0; i < n; i++) state.push(T.down[i] > 0 ? "down" : T.deg[i] > 0 ? "deg" : T.on[i] > 0 ? "good" : "none");
+  var colour = { good: "var(--good)", deg: "var(--warning)", down: "var(--critical)" };
+
+  var yMax = 0;
+  T.series.forEach(function (s) { s.med.forEach(function (v) { if (v != null && v > yMax) yMax = v; }); });
+  var nice = [10, 20, 50, 100, 200, 400, 500, 1000, 2000, 4000, 5000, 10000, 20000, 40000], yTop = nice[nice.length - 1];
+  for (i = 0; i < nice.length; i++) if (nice[i] >= yMax) { yTop = nice[i]; break; }
+
+  function slotLabel(b) {
+    var a = T.t0 + b * stepMs, z = a + stepMs, secs = T.step < 60;
+    if (T.step >= 86400) return dayOf(a);
+    return (multiDay ? dayOf(a) + ", " : "") + clock(a, secs) + " – " + clock(z, secs);
+  }
+
+  function draw() {
+    var W = Math.max(320, holder.clientWidth), ml = 46, mr = 10, pw = W - ml - mr;
+    var stripY = 2, stripH = 20, py = 40, ph = 170, wy = py + ph + 30, wh = 56;
+    var bottom = T.wifi ? wy + wh : py + ph, H = bottom + 26;
+    var wMax = T.wifiMax || 100, wUnit = T.wifiUnit || "%";
+    var yw = function (v) { return wy + wh - wh * Math.min(v, wMax) / wMax; };
+    var svg = sv("svg", { viewBox: "0 0 " + W + " " + H, height: H, tabindex: 0, role: "img",
+      "aria-label": "Timeline of connection status and response time. Use left and right arrow keys to read each time slot." });
+    var x = function (b) { return ml + pw * b / n; }, y = function (v) { return py + ph - ph * Math.min(v, yTop) / yTop; };
+
+    // status strip: runs of the same state, separated by a small surface gap
+    svg.appendChild(sv("text", { x: ml - 8, y: stripY + 14, "text-anchor": "end" }, "Status"));
+    svg.appendChild(sv("rect", { x: ml, y: stripY, width: pw, height: stripH, rx: 3, fill: "var(--grid)" }));
+    var b = 0;
+    while (b < n) {
+      var e = b; while (e + 1 < n && state[e + 1] === state[b]) e++;
+      if (state[b] !== "none") {
+        var x0 = x(b), x1 = x(e + 1), gap = (x1 - x0) > 6 ? 1 : 0, wdt = x1 - x0 - gap * 2;
+        if (state[b] !== "good" && wdt < 3) { x0 -= (3 - wdt) / 2; wdt = 3; }   // keep short incidents visible
+        svg.appendChild(sv("rect", { x: x0 + gap, y: stripY, width: Math.max(1, wdt), height: stripH, rx: 2, fill: colour[state[b]] }));
+      }
+      b = e + 1;
+    }
+
+    // y grid + labels
+    for (var g = 0; g <= 4; g++) {
+      var v = yTop * g / 4, yy = y(v);
+      svg.appendChild(sv("line", { x1: ml, x2: ml + pw, y1: yy, y2: yy, stroke: g === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+      svg.appendChild(sv("text", { x: ml - 8, y: yy + 4, "text-anchor": "end" }, g === 4 ? num(v) + " ms" : num(v)));
+    }
+
+    // x ticks on round clock times
+    var spanS = n * T.step, tickSteps = [1,2,5,10,15,30,60,120,300,600,900,1800,3600,7200,10800,21600,43200,86400,172800,604800], ts = tickSteps[tickSteps.length - 1];
+    var want = Math.max(3, Math.floor(pw / 110));
+    for (var k = 0; k < tickSteps.length; k++) if (spanS / tickSteps[k] <= want) { ts = tickSteps[k]; break; }
+    var tsMs = ts * 1000, lastDay = "";
+    for (var t = Math.ceil(T.t0 / tsMs) * tsMs; t <= tEnd; t += tsMs) {
+      var xx = ml + pw * (t - T.t0) / (tEnd - T.t0);
+      svg.appendChild(sv("line", { x1: xx, x2: xx, y1: bottom, y2: bottom + 4, stroke: "var(--axis)" }));
+      var lab = ts >= 86400 ? dayOf(t) : clock(t, ts < 60);
+      if (multiDay && ts < 86400 && dayOf(t) !== lastDay) { lab = dayOf(t) + " " + lab; lastDay = dayOf(t); }
+      var anchor = xx < ml + 30 ? "start" : xx > ml + pw - 30 ? "end" : "middle";
+      svg.appendChild(sv("text", { x: xx, y: bottom + 18, "text-anchor": anchor }, lab));
+    }
+
+    // response-time lines (broken where there was no successful response)
+    T.series.forEach(function (s, si) {
+      var d = "", pen = false, col = SERIES[si % 8];
+      for (var j = 0; j < n; j++) {
+        var val = s.med[j];
+        if (val == null) { pen = false; continue; }
+        var cx = x(j + 0.5), cy = y(val);
+        d += (pen ? "L" : "M") + cx.toFixed(1) + " " + cy.toFixed(1);
+        var alone = !pen && (j + 1 >= n || s.med[j + 1] == null);
+        if (alone) svg.appendChild(sv("circle", { cx: cx, cy: cy, r: 2, fill: col }));
+        pen = true;
+      }
+      svg.appendChild(sv("path", { d: d, fill: "none", stroke: col, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    });
+
+    // Wi-Fi signal: its own small plot with its own 0-100% scale, sharing only the time axis
+    if (T.wifi) {
+      svg.appendChild(sv("text", { x: ml, y: wy - 8 }, T.wifiLabel + (wUnit === "%" ? "" : "," + wUnit)));
+      [0, wMax / 2, wMax].forEach(function (v) {
+        svg.appendChild(sv("line", { x1: ml, x2: ml + pw, y1: yw(v), y2: yw(v), stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+        svg.appendChild(sv("text", { x: ml - 8, y: yw(v) + 4, "text-anchor": "end" }, num(v) + (v === wMax && wUnit === "%" ? "%" : "")));
+      });
+      var wd = "", wpen = false;
+      for (var q = 0; q < n; q++) {
+        var wv = T.wifi[q];
+        if (wv == null) { wpen = false; continue; }
+        var wx = x(q + 0.5), wyy = yw(wv);
+        wd += (wpen ? "L" : "M") + wx.toFixed(1) + " " + wyy.toFixed(1);
+        if (!wpen && (q + 1 >= n || T.wifi[q + 1] == null)) svg.appendChild(sv("circle", { cx: wx, cy: wyy, r: 2, fill: "var(--s7)" }));
+        wpen = true;
+      }
+      svg.appendChild(sv("path", { d: wd, fill: "none", stroke: "var(--s7)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    }
+
+    // hover / keyboard layer
+    var cross = sv("line", { y1: stripY, y2: bottom, stroke: "var(--ink2)", "stroke-width": 1, visibility: "hidden" });
+    svg.appendChild(cross);
+    var cur = -1;
+    function focusSlot(bi, px, pyy) {
+      cur = Math.max(0, Math.min(n - 1, bi));
+      var cx = x(cur + 0.5);
+      cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+      var rows = [];
+      if (state[cur] === "none") rows.push({ label: "No data recorded", color: "var(--grid)" });
+      if (T.on[cur] > 0) rows.push({ label: "Online", value: dur(T.on[cur]), color: "var(--good)" });
+      if (T.deg[cur] > 0) rows.push({ label: "Degraded", value: dur(T.deg[cur]), color: "var(--warning)" });
+      if (T.down[cur] > 0) rows.push({ label: "Outage", value: dur(T.down[cur]), color: "var(--critical)" });
+      if (T.cause[cur] && D.statuses[T.cause[cur]] && T.down[cur] > 0) rows.push({ label: "Cause: " + D.statuses[T.cause[cur]].label });
+      T.series.forEach(function (s, si) {
+        rows.push({ label: s.name, value: s.med[cur] == null ? "no response" : num(s.med[cur]) + " ms", color: SERIES[si % 8], line: true });
+      });
+      if (T.wifi && T.wifi[cur] != null) rows.push({ label: wUnit === "%" ? "Wi-Fi signal" : "Wi-Fi link speed", value: num(T.wifi[cur]) + wUnit, color: "var(--s7)", line: true });
+      if (px == null) { var r = svg.getBoundingClientRect(); px = r.left + cx * r.width / W; pyy = r.top + py; }
+      showTip(px, pyy, slotLabel(cur), rows);
+    }
+    var hit = sv("rect", { x: ml, y: 0, width: pw, height: bottom, fill: "transparent" });
+    hit.addEventListener("mousemove", function (ev) {
+      var r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width;
+      focusSlot(Math.floor((sx - ml) / pw * n), ev.clientX, ev.clientY);
+    });
+    hit.addEventListener("mouseleave", function () { cross.setAttribute("visibility", "hidden"); hideTip(); });
+    svg.appendChild(hit);
+    svg.addEventListener("keydown", function (ev) {
+      if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") { ev.preventDefault(); focusSlot(cur < 0 ? n - 1 : cur + (ev.key === "ArrowRight" ? 1 : -1)); }
+      if (ev.key === "Escape") { cross.setAttribute("visibility", "hidden"); hideTip(); }
+    });
+    svg.addEventListener("blur", function () { cross.setAttribute("visibility", "hidden"); hideTip(); });
+
+    holder.textContent = ""; holder.appendChild(svg);
+  }
+  draw();
+  var timer; window.addEventListener("resize", function () { clearTimeout(timer); timer = setTimeout(draw, 120); });
+  window.addEventListener("beforeprint", draw);
+
+  // the same figures as a table
+  var head = ["Time slot", "Online", "Degraded", "Outage"].concat(T.series.map(function (s) { return s.name + " (ms)"; }));
+  if (T.wifi) head.push(T.wifiUnit === "%" ? "Wi-Fi signal" : "Wi-Fi link (Mbps)");
+  var tb = el("tbody");
+  for (i = 0; i < n; i++) {
+    if (state[i] === "none") continue;
+    var tr = el("tr", {}, [el("td", { cls: "nowrap", text: slotLabel(i) }), el("td", { cls: "num", text: dur(T.on[i]) }),
+      el("td", { cls: "num", text: T.deg[i] > 0 ? dur(T.deg[i]) : "–" }), el("td", { cls: "num", text: T.down[i] > 0 ? dur(T.down[i]) : "–" })]);
+    T.series.forEach(function (s) { tr.appendChild(el("td", { cls: "num", text: num(s.med[i]) })); });
+    if (T.wifi) tr.appendChild(el("td", { cls: "num", text: T.wifi[i] == null ? "\u2013" : num(T.wifi[i]) + (T.wifiUnit === "%" ? "%" : "") }));
+    tb.appendChild(tr);
+  }
+  c.appendChild(el("details", {}, [el("summary", { text: "Show these figures as a table" }),
+    el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, head.map(function (h, hi) { return el("th", { cls: hi ? "num" : "", text: h }); }))]), tb])])]));
+}
+
+/* ---------- downtime by cause, and by hour of day ---------- */
+function renderCauseAndHeat() {
+  var hasCause = D.causes.length > 0, hasHeat = !!D.heat;
+  if (!hasCause && !hasHeat) return;
+  var holder = hasCause && hasHeat ? el("div", { cls: "two" }) : wrap;
+  if (holder !== wrap) wrap.appendChild(holder);
+
+  if (hasCause) {
+    var c = el("section", { cls: "card" }, [el("h3", { text: "Time lost, by cause" }),
+      el("p", { cls: "desc", text: "What the checks pointed to while web access was down or degraded." })]);
+    var max = Math.max.apply(null, D.causes.map(function (x) { return x.sec; })) || 1;
+    var bars = el("div", { cls: "bars" });
+    D.causes.forEach(function (x) {
+      var bar = el("div", { cls: "bar" }); bar.style.flex = "0 0 calc((100% - 150px) * " + (x.sec / max).toFixed(4) + ")";
+      var row = el("div", { cls: "track", tabindex: 0 }, [bar, el("span", { cls: "val", text: x.dur + " · " + x.count + (x.count === 1 ? " incident" : " incidents") })]);
+      var show = function (ev) {
+        var r = row.getBoundingClientRect();
+        showTip(ev.clientX || r.left + 40, ev.clientY || r.bottom, x.label, [{ label: D.statuses[x.code] ? D.statuses[x.code].explain : "" }]);
+        tip.querySelector(".r").style.whiteSpace = "normal";
+      };
+      row.addEventListener("mousemove", show); row.addEventListener("focus", show);
+      row.addEventListener("mouseleave", hideTip); row.addEventListener("blur", hideTip);
+      bars.appendChild(el("div", { cls: "badge" }, [el("span", { cls: "dot s" + x.sev }), x.label]));
+      bars.appendChild(row);
+    });
+    c.appendChild(bars);
+    holder.appendChild(c);
+  }
+
+  if (hasHeat) {
+    var h = el("section", { cls: "card" }, [el("h3", { text: "Downtime by hour of day" }),
+      el("p", { cls: "desc", text: "Each square is one hour. Darker means more of that hour was lost to outages." })]);
+    var lg = el("div", { cls: "legend" });
+    [["b0", "none"], ["b1", "under 1%"], ["b2", "1–10%"], ["b3", "10–50%"], ["b4", "over 50%"]].forEach(function (x) {
+      lg.appendChild(el("span", {}, [el("span", { cls: "sw " + x[0] }), x[1]]));
+    });
+    var k = el("span", { cls: "sw" }); k.style.boxShadow = "inset 0 0 0 1px var(--axis)"; lg.appendChild(el("span", {}, [k, "not monitored"]));
+    h.appendChild(lg);
+    var grid = el("div", { cls: "heat" });
+    grid.appendChild(el("div"));
+    for (var hr = 0; hr < 24; hr++) grid.appendChild(el("div", { cls: "hr", text: hr % 3 === 0 ? p2(hr) : "" }));
+    D.heat.forEach(function (row) {
+      grid.appendChild(el("div", { cls: "day", text: row.day }));
+      row.cells.forEach(function (cell, hi) {
+        var cls = "none", title = row.day + ", " + p2(hi) + ":00–" + p2((hi + 1) % 24) + ":00", rows;
+        if (cell) {
+          var share = cell[1] / cell[0];
+          cls = cell[1] <= 0 ? "b0" : share < 0.01 ? "b1" : share < 0.10 ? "b2" : share < 0.50 ? "b3" : "b4";
+          rows = [{ label: "Outage", value: cell[1] > 0 ? dur(cell[1]) : "none" }, { label: "Monitored", value: dur(cell[0]) }];
+        } else rows = [{ label: "Not monitored" }];
+        var d = el("div", { cls: "cell " + cls, tabindex: cell ? 0 : -1, "aria-label": title + ": " + rows.map(function (r) { return r.label + " " + (r.value || ""); }).join(", ") });
+        var show = function (ev) { var r = d.getBoundingClientRect(); showTip(ev.clientX || r.left + 8, ev.clientY || r.bottom, title, rows); };
+        d.addEventListener("mousemove", show); d.addEventListener("focus", show);
+        d.addEventListener("mouseleave", hideTip); d.addEventListener("blur", hideTip);
+        grid.appendChild(d);
+      });
+    });
+    h.appendChild(grid);
+    holder.appendChild(h);
+  }
+}
+
+/* ---------- incident log ---------- */
+function renderIncidents() {
+  var total = D.incidentsTotal, shown = D.incidents.length;
+  var c = card("Incident log", total === 0 ? "" :
+    (shown < total ? "The most recent " + shown + " of " + total + " incidents, newest first." : "Every period when web access was not fully working, newest first."));
+  if (total === 0) { c.appendChild(el("div", { cls: "empty", text: "Nothing to report: every check succeeded for the whole period." })); return; }
+  var tb = el("tbody");
+  D.incidents.forEach(function (x) {
+    var st = D.statuses[x.code] || { label: x.code, sev: 2 };
+    tb.appendChild(el("tr", {}, [
+      el("td", { cls: "nowrap", text: x.start }), el("td", { cls: "nowrap", text: x.end }), el("td", { cls: "num", text: x.dur }),
+      el("td", {}, [el("span", { cls: "badge" }, [el("span", { cls: "dot s" + st.sev }), st.label])]),
+      el("td", { cls: "small", text: x.detail })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Started" }), el("th", { text: "Ended" }), el("th", { cls: "num", text: "Duration" }), el("th", { text: "Conclusion" }), el("th", { text: "What failed" })])]), tb])]));
+}
+
+/* ---------- combined report: many computers on one time axis ---------- */
+function renderFleet() {
+  var F = D.fleet, s = D.summary, n = F.n, stepMs = F.step * 1000, tEnd = F.t0 + n * stepMs;
+  var multiDay = dayOf(F.t0) !== dayOf(tEnd - 1);
+  function tile(label, value, note, hero) {
+    return el("div", { cls: "tile" + (hero ? " hero" : "") }, [
+      el("div", { cls: "label", text: label }), el("div", { cls: "value", text: value }), note ? el("div", { cls: "note", text: note }) : null]);
+  }
+  wrap.appendChild(el("div", { cls: "tiles" }, [
+    tile("Site-wide outages", String(s.siteWide), "hit most computers at once", true),
+    tile("Site-wide downtime", s.siteWideDur, ""),
+    tile("Local incidents", String(s.local), s.single ? s.single + " more unclassified" : "limited to a few computers"),
+    tile("Computers", String(s.computers), F.sites > 1 ? "at " + F.sites + " sites" : ""),
+    tile("Most local trouble", s.worst, s.worstDur)
+  ]));
+  var worst = wrap.lastChild.lastChild.querySelector(".value"); worst.style.fontSize = "18px"; worst.style.overflowWrap = "anywhere";
+
+  var c = card("Every computer on one timeline",
+    "One row per computer. Red in the same place on most rows is a shared fault (line, firewall or web filter); red on one row only is local to that computer. "
+    + "Rows are ordered with the most downtime first." + (F.hidden ? " The " + F.hidden + " computers with the least downtime are not drawn; they are in the table below." : ""));
+  var lg = el("div", { cls: "legend" });
+  [["Online", "var(--good)"], ["Degraded", "var(--warning)"], ["Outage", "var(--critical)"], ["No data", "var(--grid)"]].forEach(function (x) {
+    var k = el("span", { cls: "sw" }); k.style.background = x[1]; lg.appendChild(el("span", {}, [k, x[0]]));
+  });
+  c.appendChild(lg);
+  var holder = el("div"); c.appendChild(holder);
+  var colour = { good: "var(--good)", deg: "var(--warning)", down: "var(--critical)" };
+  var lanes = [{ name: "Site-wide outage", wide: true }].concat(F.rows);
+  function stateOf(r, b) {
+    if (r.wide) return F.wide[b] ? "down" : "none";
+    return r.down[b] > 0 ? "down" : r.deg[b] > 0 ? "deg" : r.on[b] > 0 ? "good" : "none";
+  }
+  function slotLabel(b) {
+    var a = F.t0 + b * stepMs, z = a + stepMs, secs = F.step < 60;
+    if (F.step >= 86400) return dayOf(a);
+    return (multiDay ? dayOf(a) + ", " : "") + clock(a, secs) + " \u2013 " + clock(z, secs);
+  }
+  function draw() {
+    var W = Math.max(320, holder.clientWidth), ml = Math.min(190, Math.round(W * 0.26)), mr = 10, pw = W - ml - mr;
+    var rh = 14, rg = 6, top = 4, H = top + lanes.length * (rh + rg) + 8 + 22;
+    var svg = sv("svg", { viewBox: "0 0 " + W + " " + H, height: H, role: "img", "aria-label": "Status of each computer over time. The same figures are in the tables below." });
+    var x = function (b) { return ml + pw * b / n; }, bottom = top + lanes.length * (rh + rg) + 2;
+    lanes.forEach(function (r, ri) {
+      var y = top + ri * (rh + rg) + (ri > 0 ? 8 : 0);
+      var name = r.name.length > 26 ? r.name.slice(0, 25) + "\u2026" : r.name;
+      var t = sv("text", { x: ml - 8, y: y + 11, "text-anchor": "end" }, name);
+      if (r.wide) t.setAttribute("style", "fill: var(--ink2); font-weight: 600");
+      svg.appendChild(t);
+      svg.appendChild(sv("rect", { x: ml, y: y, width: pw, height: rh, rx: 3, fill: "var(--grid)" }));
+      var b = 0;
+      while (b < n) {
+        var st = stateOf(r, b), e = b;
+        while (e + 1 < n && stateOf(r, e + 1) === st) e++;
+        if (st !== "none") {
+          var x0 = x(b), wdt = x(e + 1) - x0, gap = wdt > 6 ? 1 : 0;
+          wdt -= gap * 2;
+          if (st !== "good" && wdt < 3) { x0 -= (3 - wdt) / 2; wdt = 3; }
+          svg.appendChild(sv("rect", { x: x0 + gap, y: y, width: Math.max(1, wdt), height: rh, rx: 2, fill: colour[st] }));
+        }
+        b = e + 1;
+      }
+    });
+    var spanS = n * F.step, tickSteps = [10,15,30,60,120,300,600,900,1800,3600,7200,10800,21600,43200,86400,172800,604800], ts = tickSteps[tickSteps.length - 1];
+    var want = Math.max(3, Math.floor(pw / 110));
+    for (var k = 0; k < tickSteps.length; k++) if (spanS / tickSteps[k] <= want) { ts = tickSteps[k]; break; }
+    var tsMs = ts * 1000, lastDay = "";
+    for (var t2 = Math.ceil(F.t0 / tsMs) * tsMs; t2 <= tEnd; t2 += tsMs) {
+      var xx = ml + pw * (t2 - F.t0) / (tEnd - F.t0);
+      svg.appendChild(sv("line", { x1: xx, x2: xx, y1: bottom + 6, y2: bottom + 10, stroke: "var(--axis)" }));
+      var lab = ts >= 86400 ? dayOf(t2) : clock(t2, ts < 60);
+      if (multiDay && ts < 86400 && dayOf(t2) !== lastDay) { lab = dayOf(t2) + " " + lab; lastDay = dayOf(t2); }
+      svg.appendChild(sv("text", { x: xx, y: bottom + 24, "text-anchor": xx < ml + 30 ? "start" : xx > ml + pw - 30 ? "end" : "middle" }, lab));
+    }
+    var cross = sv("line", { y1: top, y2: bottom + 6, stroke: "var(--ink2)", "stroke-width": 1, visibility: "hidden" });
+    svg.appendChild(cross);
+    var hit = sv("rect", { x: ml, y: 0, width: pw, height: bottom + 6, fill: "transparent" });
+    hit.addEventListener("mousemove", function (ev) {
+      var r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width, sy = (ev.clientY - r.top) * H / r.height;
+      var b = Math.max(0, Math.min(n - 1, Math.floor((sx - ml) / pw * n)));
+      var ri = Math.max(0, Math.min(lanes.length - 1, Math.floor((sy - top - (sy > top + rh + rg ? 8 : 0)) / (rh + rg))));
+      var cx = x(b + 0.5); cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+      var lane = lanes[ri], rows = [], downCount = 0, watching = 0;
+      F.rows.forEach(function (q) { if (q.on[b] + q.deg[b] + q.down[b] > 0) watching++; if (q.down[b] > 0) downCount++; });
+      if (lane.wide) rows.push({ label: F.wide[b] ? "Site-wide outage in this slot" : "No site-wide outage", color: F.wide[b] ? "var(--critical)" : "var(--grid)" });
+      else {
+        if (lane.on[b] + lane.deg[b] + lane.down[b] === 0) rows.push({ label: "No data recorded", color: "var(--grid)" });
+        if (lane.on[b] > 0) rows.push({ label: "Online", value: dur(lane.on[b]), color: "var(--good)" });
+        if (lane.deg[b] > 0) rows.push({ label: "Degraded", value: dur(lane.deg[b]), color: "var(--warning)" });
+        if (lane.down[b] > 0) rows.push({ label: "Outage", value: dur(lane.down[b]), color: "var(--critical)" });
+      }
+      rows.push({ label: "Computers with an outage", value: downCount + " of " + watching });
+      showTip(ev.clientX, ev.clientY, lane.name + " \u00b7 " + slotLabel(b), rows);
+    });
+    hit.addEventListener("mouseleave", function () { cross.setAttribute("visibility", "hidden"); hideTip(); });
+    svg.appendChild(hit);
+    holder.textContent = ""; holder.appendChild(svg);
+  }
+  draw();
+  var timer; window.addEventListener("resize", function () { clearTimeout(timer); timer = setTimeout(draw, 120); });
+  window.addEventListener("beforeprint", draw);
+
+  // incidents, classified
+  var ic = card("Outages, classified", F.incidentsTotal === 0 ? "" :
+    "Outages that overlapped in time are grouped. \u201cSite-wide\u201d means at least two computers, and at least half of those monitoring at the time, were down together."
+    + (F.incidents.length < F.incidentsTotal ? " Showing the most recent " + F.incidents.length + " of " + F.incidentsTotal + "." : ""));
+  if (F.incidentsTotal === 0) ic.appendChild(el("div", { cls: "empty", text: "No outages were recorded on any computer." }));
+  else {
+    var tb = el("tbody");
+    F.incidents.forEach(function (x) {
+      var cells = [el("td", { cls: "nowrap", text: x.start }), el("td", { cls: "nowrap", text: x.end }), el("td", { cls: "num", text: x.dur }),
+        el("td", {}, [el("span", { cls: "badge" }, [el("span", { cls: "dot s" + (x.scope === 2 ? 2 : x.scope === 1 ? 1 : 9) }), x.scopeText])])];
+      if (F.sites > 1) cells.push(el("td", { text: x.site }));
+      cells.push(el("td", { text: x.cause })); cells.push(el("td", { cls: "small", text: x.who }));
+      tb.appendChild(el("tr", {}, cells));
+    });
+    var hd = [el("th", { text: "Started" }), el("th", { text: "Ended" }), el("th", { cls: "num", text: "Duration" }), el("th", { text: "Scope" })];
+    if (F.sites > 1) hd.push(el("th", { text: "Site" }));
+    hd.push(el("th", { text: "Conclusion" })); hd.push(el("th", { text: "Computers affected" }));
+    ic.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, hd)]), tb])]));
+  }
+
+  // per computer
+  var pc = card("Each computer", "Shared downtime is time lost in site-wide outages; local downtime is time lost when most other computers were fine.");
+  var pb = el("tbody");
+  F.computers.forEach(function (x) {
+    pb.appendChild(el("tr", {}, [el("td", { text: x.name }), el("td", { cls: "num", text: x.mon }), el("td", { cls: "num", text: x.avail + "%" }),
+      el("td", { cls: "num", text: String(x.outages) }), el("td", { cls: "num", text: x.down }), el("td", { cls: "num", text: x.shared }), el("td", { cls: "num", text: x.local }),
+      el("td", { cls: "num", text: num(x.med) }), el("td", { cls: "small", text: x.ips })]));
+  });
+  pc.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Computer" }), el("th", { cls: "num", text: "Monitored" }), el("th", { cls: "num", text: "Availability" }), el("th", { cls: "num", text: "Outages" }),
+    el("th", { cls: "num", text: "Downtime" }), el("th", { cls: "num", text: "Shared" }), el("th", { cls: "num", text: "Local" }),
+    el("th", { cls: "num", text: "Median ms" }), el("th", { text: "Public IP" })])]), pb])]));
+
+  if (F.aps.length) {
+    var ac = card("Wi-Fi access points", "Outage time recorded while computers were connected to each access point, worst first.");
+    var ab = el("tbody");
+    F.aps.forEach(function (a) {
+      ab.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: a.bssid }), el("td", { text: a.ssid }), el("td", { cls: "num", text: String(a.pcs) }),
+        el("td", { cls: "num", text: a.dur }), el("td", { cls: "num", text: a.down })]));
+    });
+    ac.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Access point (BSSID)" }), el("th", { text: "Network" }), el("th", { cls: "num", text: "Computers seen" }),
+      el("th", { cls: "num", text: "Time connected" }), el("th", { cls: "num", text: "Outage time" })])]), ab])]));
+  }
+}
+
+/* ---------- route traces ---------- */
+function renderTraces() {
+  if (!D.traces || !D.traces.length) return;
+  var c = card("Route traces", "A trace lists the routers between this computer and the internet. One is taken while healthy and one at the moment each outage begins; the point where replies stop shows where the path broke.");
+  D.traces.forEach(function (t) {
+    var box = el("div", { cls: "trace" });
+    box.appendChild(el("div", { cls: "badge" }, [el("span", { cls: "dot s" + (t.outage ? 2 : 0) }), el("b", { text: t.reason }), " \u00b7 " + t.time + " \u00b7 to " + t.target]));
+    box.appendChild(el("p", { cls: "small", text: t.summary }));
+    var tb = el("tbody");
+    t.hops.forEach(function (h) {
+      tb.appendChild(el("tr", {}, [el("td", { cls: "num", text: String(h[0]) }), el("td", { cls: "nowrap", text: h[1] || "no reply" }), el("td", { cls: "num", text: h[2] == null ? "\u2013" : h[2] + " ms" })]));
+    });
+    if (t.hops.length) box.appendChild(el("details", {}, [el("summary", { text: "Show the " + t.hops.length + " hops" }),
+      el("div", { cls: "scroll" }, [el("table", { cls: "narrow" }, [el("thead", {}, [el("tr", {}, [el("th", { cls: "num", text: "Hop" }), el("th", { text: "Router" }), el("th", { cls: "num", text: "Reply time" })])]), tb])])]));
+    c.appendChild(box);
+  });
+}
+
+/* ---------- Wi-Fi ---------- */
+function renderWifi() {
+  var W = D.wifi;
+  if (!W) return;
+  var c = card("Wi-Fi", "Which access points this computer used, how strong the signal was, and whether outages began on a particular one. "
+    + (W.roams === 0 ? "It stayed on the same access point throughout." : "It moved between access points " + W.roams + (W.roams === 1 ? " time." : " times.")));
+  var tb = el("tbody");
+  W.aps.forEach(function (a) {
+    tb.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: a.bssid }), el("td", { text: a.ssid }), el("td", { cls: "num", text: a.dur }),
+      el("td", { cls: "num", text: a.med == null ? "\u2013" : a.med + "%" }), el("td", { cls: "num", text: a.min == null ? "\u2013" : a.min + "%" }),
+      el("td", { cls: "num", text: String(a.outages) }), el("td", { cls: "num", text: a.down })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Access point (BSSID)" }), el("th", { text: "Network" }), el("th", { cls: "num", text: "Time connected" }), el("th", { cls: "num", text: "Typical signal" }),
+    el("th", { cls: "num", text: "Weakest signal" }), el("th", { cls: "num", text: "Outages begun here" }), el("th", { cls: "num", text: "Outage time here" })])]), tb])]));
+  if (W.roamList.length) {
+    var rb = el("tbody");
+    W.roamList.forEach(function (r) {
+      rb.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: r[0] }), el("td", { cls: "nowrap", text: r[1] }), el("td", { cls: "num", text: r[2] }), el("td", { cls: "nowrap", text: r[3] }), el("td", { cls: "num", text: r[4] })]));
+    });
+    c.appendChild(el("details", {}, [el("summary", { text: "Show moves between access points" }),
+      el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "Time" }), el("th", { text: "From" }), el("th", { cls: "num", text: "Signal before" }), el("th", { text: "To" }), el("th", { cls: "num", text: "Signal after" })])]), rb])])]));
+  }
+}
+
+/* ---------- per-check results ---------- */
+function renderChecks() {
+  var c = card("Results for each check", "Web requests travel the same route as a browser (through the web filter or proxy). Direct connections, the gateway ping and the DNS query are used to work out where a fault lies. Services marked Global (US-run) belong to American companies but answer from their nearest site, which from the UK is normally London.");
+  var tb = el("tbody");
+  D.checks.forEach(function (x) {
+    tb.appendChild(el("tr", {}, [
+      el("td", {}, [x.kind + (x.name ? ": " + x.name : "")]), el("td", { cls: "nowrap", text: x.region }), el("td", { cls: "small", text: x.target }),
+      el("td", { cls: "num", text: num(x.tests) }), el("td", { cls: "num", text: x.okPct + "%" }), el("td", { cls: "num", text: num(x.fails) }),
+      el("td", { cls: "num", text: num(x.med) }), el("td", { cls: "num", text: num(x.p95) }), el("td", { cls: "num", text: num(x.max) }),
+      el("td", { cls: "small", text: x.topFail })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Check" }), el("th", { text: "Based" }), el("th", { text: "Target" }), el("th", { cls: "num", text: "Tests" }), el("th", { cls: "num", text: "Success" }), el("th", { cls: "num", text: "Failures" }),
+    el("th", { cls: "num", text: "Median ms" }), el("th", { cls: "num", text: "95th pct ms" }), el("th", { cls: "num", text: "Slowest ms" }), el("th", { text: "Most common failure" })])]), tb])]));
+}
+
+/* ---------- environment + how to read ---------- */
+function renderEnvironment() {
+  var two = el("div", { cls: "two" }); wrap.appendChild(two);
+  var dl = el("dl", { cls: "env" });
+  D.env.forEach(function (p) { dl.appendChild(el("dt", { text: p[0] })); dl.appendChild(el("dd", { text: p[1] })); });
+  two.appendChild(el("section", { cls: "card" }, [el("h3", { text: "Where this was measured" }), el("p", { cls: "desc", text: "" }), dl]));
+
+  var how = el("section", { cls: "card howto" }, [el("h3", { text: "How to read this report" })]);
+  how.appendChild(el("p", { text: "Every few seconds the monitor runs a set of checks at the same moment and reaches one conclusion from the combination:" }));
+  var ul = el("ul");
+  Object.keys(D.statuses).forEach(function (code) {
+    var s = D.statuses[code];
+    ul.appendChild(el("li", {}, [el("b", { text: s.label + ". " }), s.explain]));
+  });
+  how.appendChild(ul);
+  how.appendChild(el("p", { text: "Availability is the share of monitored time that was not an outage. Degraded time still counts as available. Periods with no data (computer asleep or monitor closed) are left out rather than guessed." }));
+  two.appendChild(how);
+}
+</script>
+</body>
+</html>

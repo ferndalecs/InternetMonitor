@@ -1,0 +1,11 @@
+# Build output (the EXE is published as a GitHub release, not committed)
+dist/
+
+# Anything the program writes when run from this folder
+Logs/
+Reports/
+InternetMonitor.ini
+
+# The original PowerShell script this replaced
+InternetMonitor.ps1
+InternetMonitor.zip
