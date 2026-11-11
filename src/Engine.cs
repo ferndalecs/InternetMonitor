@@ -16,6 +16,14 @@ namespace InternetMonitor
 {
     internal enum Tri { NA, Ok, Fail }
 
+    /// <summary>One entry in the certificate log: who issued a website's certificate, as seen from here.</summary>
+    internal sealed class CertRecord
+    {
+        public DateTime Time;
+        public string Check = "", Host = "", Adapter = "", Issuer = "", Root = "", Why = "";
+        public bool Inspected, Trusted;
+    }
+
     internal static class Diagnosis
     {
         /// <summary>
@@ -28,7 +36,23 @@ namespace InternetMonitor
         /// <param name="direct">NA when direct connections are not permitted on this network.</param>
         public static string Classify(bool linkUp, int httpOk, int httpCounted, Tri gateway, Tri dns, Tri proxy, Tri direct, bool explicitProxy)
         {
+            return Classify(linkUp, httpOk, httpCounted, gateway, dns, proxy, direct, explicitProxy, 0, 0);
+        }
+
+        /// <param name="inspectedCounted">Web checks that count and whose HTTPS the filter is decrypting.</param>
+        /// <param name="inspectedOk">How many of those succeeded.</param>
+        public static string Classify(bool linkUp, int httpOk, int httpCounted, Tri gateway, Tri dns, Tri proxy, Tri direct, bool explicitProxy,
+            int inspectedOk, int inspectedCounted)
+        {
             if (httpCounted > 0 && httpOk >= httpCounted) return St.Online;
+
+            // Every decrypted site is failing and nothing else is: the filter's HTTPS inspection, not the line.
+            // Needs at least two decrypted sites (one failing by itself proves little) and something
+            // that is not decrypted still working, to compare against.
+            int otherCounted = httpCounted - inspectedCounted, otherOk = httpOk - inspectedOk;
+            if (inspectedCounted >= 2 && inspectedOk == 0 && otherOk == otherCounted && (otherCounted > 0 || direct == Tri.Ok))
+                return St.Inspection;
+
             if (httpOk > 0) return St.Degraded;
 
             // Every web check failed. Work outwards from this computer.
@@ -117,7 +141,12 @@ namespace InternetMonitor
         {
             StringBuilder sb = new StringBuilder("Timestamp,Status,IntervalMs");
             foreach (CheckDef d in schema.Defs) sb.Append(',').Append(d.Key).Append("_Result,").Append(d.Key).Append("_ms");
-            sb.Append(",LocalIP,ExternalIP,WiFi_SSID,WiFi_BSSID,WiFi_Signal,WiFi_LinkMbps");
+            sb.Append(",LocalIP,ExternalIP,WiFi_SSID,WiFi_BSSID,WiFi_Signal,WiFi_LinkMbps,Adapter,Inspected");
+            // Stage timings for each web check go at the end, so older versions can still read the file.
+            foreach (CheckDef d in schema.Defs)
+            {
+                if (d.Kind == "HTTP") sb.Append(',').Append(d.Key).Append("_DnsMs,").Append(d.Key).Append("_TcpMs,").Append(d.Key).Append("_TlsMs");
+            }
             return sb.ToString();
         }
 
@@ -145,6 +174,19 @@ namespace InternetMonitor
                     if (s.WifiSignal >= 0) sb.Append(s.WifiSignal);
                     sb.Append(',');
                     if (s.WifiLinkMbps >= 0) sb.Append(s.WifiLinkMbps);
+                    sb.Append(',').Append((s.Adapter ?? "").Replace(',', ' '));
+                    sb.Append(',').Append(s.Inspected ?? "");
+                    for (int i = 0; i < s.R.Length; i++)
+                    {
+                        if (s.Schema.Defs[i].Kind != "HTTP") continue;
+                        CheckResult r = s.R[i];
+                        sb.Append(',');
+                        if (r.Tested && r.DnsMs >= 0) sb.Append(r.DnsMs);
+                        sb.Append(',');
+                        if (r.Tested && r.TcpMs >= 0) sb.Append(r.TcpMs);
+                        sb.Append(',');
+                        if (r.Tested && r.TlsMs >= 0) sb.Append(r.TlsMs);
+                    }
                     writer.WriteLine(sb.ToString());
                     LastError = null;
                 }
@@ -225,6 +267,62 @@ namespace InternetMonitor
             return all;
         }
 
+        private const string CertHeader = "Timestamp,Check,Host,Adapter,Inspected,Trusted,Issuer,Root,Reason";
+
+        private static string Field(string text)
+        {
+            return (text ?? "").Replace(',', ';').Replace('\r', ' ').Replace('\n', ' ');
+        }
+
+        /// <summary>Records who issued a website's certificate. Written when first seen and whenever it changes.</summary>
+        public void AppendCert(CertRecord c)
+        {
+            lock (gate)
+            {
+                try
+                {
+                    string path = Path.Combine(LogDir, "InternetCerts_" + MachineTag + "_" + c.Time.ToString("yyyy-MM-dd") + ".csv");
+                    bool isNew = !File.Exists(path);
+                    StringBuilder sb = new StringBuilder();
+                    if (isNew) sb.AppendLine(CertHeader);
+                    sb.Append(c.Time.ToString(TimeFormat, CultureInfo.InvariantCulture)).Append(',').Append(Field(c.Check)).Append(',').Append(Field(c.Host)).Append(',')
+                      .Append(Field(c.Adapter)).Append(',').Append(c.Inspected ? "1" : "0").Append(',').Append(c.Trusted ? "1" : "0").Append(',')
+                      .Append(Field(c.Issuer)).Append(',').Append(Field(c.Root)).Append(',').Append(Field(c.Why)).AppendLine();
+                    File.AppendAllText(path, sb.ToString(), new UTF8Encoding(false));
+                }
+                catch { }
+            }
+        }
+
+        public List<CertRecord> ReadCerts(DateTime from, DateTime to)
+        {
+            List<CertRecord> all = new List<CertRecord>();
+            string[] files;
+            try { files = Directory.GetFiles(LogDir, "InternetCerts_" + MachineTag + "_*.csv"); }
+            catch { return all; }
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+            foreach (string file in files)
+            {
+                try
+                {
+                    if (File.GetLastWriteTime(file) < from.AddMinutes(-5)) continue;
+                    foreach (string line in File.ReadAllLines(file))
+                    {
+                        string[] f = line.Split(',');
+                        DateTime t;
+                        if (f.Length < 9 || !DateTime.TryParseExact(f[0], TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out t)) continue;
+                        if (t < from || t > to) continue;
+                        CertRecord c = new CertRecord();
+                        c.Time = t; c.Check = f[1]; c.Host = f[2]; c.Adapter = f[3]; c.Inspected = f[4] == "1"; c.Trusted = f[5] == "1";
+                        c.Issuer = f[6].Replace(';', ','); c.Root = f[7].Replace(';', ','); c.Why = f[8].Replace(';', ',');
+                        all.Add(c);
+                    }
+                }
+                catch { }
+            }
+            return all;
+        }
+
         private const string TraceHeader = "Timestamp,Reason,Target,Reached,Hop,Address,Ms";
 
         public void AppendTrace(Trace t)
@@ -301,6 +399,8 @@ namespace InternetMonitor
                 int iExt = Array.IndexOf(cols, "ExternalIP");
                 int iSsid = Array.IndexOf(cols, "WiFi_SSID"), iBssid = Array.IndexOf(cols, "WiFi_BSSID"), iSignal = Array.IndexOf(cols, "WiFi_Signal");
                 int iLink = Array.IndexOf(cols, "WiFi_LinkMbps");
+                int iAdapter = Array.IndexOf(cols, "Adapter");
+                int iInspected = Array.IndexOf(cols, "Inspected");
                 if (cols.Length < 3 || cols[0] != "Timestamp" || iStatus < 0) return;
 
                 List<CheckDef> defs = new List<CheckDef>();
@@ -314,6 +414,8 @@ namespace InternetMonitor
                 }
                 Schema schema = new Schema();
                 schema.Defs = defs.ToArray();
+                int[] iStage = new int[defs.Count];      // column of each web check's first stage timing, or -1
+                for (int c = 0; c < defs.Count; c++) iStage[c] = defs[c].Kind == "HTTP" ? Array.IndexOf(cols, defs[c].Key + "_DnsMs") : -1;
 
                 string line;
                 while ((line = sr.ReadLine()) != null)
@@ -337,6 +439,8 @@ namespace InternetMonitor
                     int sig;
                     if (iSignal >= 0 && int.TryParse(f[iSignal], out sig)) s.WifiSignal = sig;
                     if (iLink >= 0 && int.TryParse(f[iLink], out sig)) s.WifiLinkMbps = sig;
+                    if (iAdapter >= 0) s.Adapter = string.Intern(f[iAdapter]);
+                    if (iInspected >= 0) s.Inspected = string.Intern(f[iInspected]);
                     s.R = new CheckResult[defs.Count];
                     for (int c = 0; c < defs.Count; c++)
                     {
@@ -348,6 +452,13 @@ namespace InternetMonitor
                         r.Detail = string.Intern(res);
                         int ms;
                         if (int.TryParse(f[resultIdx[c] + 1], out ms)) r.Ms = ms;
+                        r.DnsMs = r.TcpMs = r.TlsMs = -1;
+                        if (iStage[c] >= 0 && iStage[c] + 2 < f.Length)
+                        {
+                            if (int.TryParse(f[iStage[c]], out ms)) r.DnsMs = ms;
+                            if (int.TryParse(f[iStage[c] + 1], out ms)) r.TcpMs = ms;
+                            if (int.TryParse(f[iStage[c] + 2], out ms)) r.TlsMs = ms;
+                        }
                         s.R[c] = r;
                     }
                     into.Add(s);
@@ -366,6 +477,7 @@ namespace InternetMonitor
         public double MonitoredSec;
         public double DownSec;
         public double DegradedSec;
+        public int DegradedEpisodes;     // spells when some web checks failed while others worked
         public int Outages;
         public double CurrentOutageSec;
         public double LongestOutageSec;
@@ -378,6 +490,11 @@ namespace InternetMonitor
 
         public double TotalSec { get { return MonitoredSec + TailSec; } }
         public double TotalDownSec { get { return DownSec + (TailSeverity == 2 ? TailSec : 0); } }
+        public double TotalDegradedSec { get { return DegradedSec + (TailSeverity == 1 ? TailSec : 0); } }
+
+        // How often each check (same order as the schema) has been run and has succeeded this session.
+        public int[] CheckTests = new int[0];
+        public int[] CheckOk = new int[0];
 
         public double AvailabilityPct
         {
@@ -399,6 +516,9 @@ namespace InternetMonitor
         public readonly int IntervalMs;          // 0 = adaptive
         public readonly int DurationMinutes;     // 0 = until stopped
         public readonly bool KeepAwake;
+        /// <summary>The adapter every check is sent through; empty = whichever one Windows chooses.</summary>
+        public readonly string AdapterId;
+        private IPAddress bindTo;       // that adapter's local address (kept if the adapter later drops out, so checks fail rather than stray onto another line)
 
         public event Action<Sample> SampleTaken;
         public event Action<bool> Stopped;       // true = the chosen run time elapsed
@@ -407,6 +527,7 @@ namespace InternetMonitor
         public volatile ProxyInfo Proxy = new ProxyInfo();
         public volatile bool DirectBlockedByPolicy;
         public volatile string LastExternalIP = "";
+        public volatile int ExternalIPChanges;   // times the public address changed during this session
         public readonly HashSet<string> ServedFrom = new HashSet<string>();
         public volatile WifiInfo LastWifi;
         public readonly List<Trace> Traces = new List<Trace>();
@@ -417,7 +538,8 @@ namespace InternetMonitor
         private DateTime[] httpPausedUntil;
         public const int RateLimitPauseMinutes = 15;
         public readonly SessionStats Stats = new SessionStats();
-        public readonly Dictionary<string, string> CertIssuers = new Dictionary<string, string>();
+        public readonly List<CertRecord> Certs = new List<CertRecord>();   // every certificate issuer seen this session, in order
+        private CertInfo[] httpCert;             // the latest certificate seen for each web check
 
         private readonly List<Sample> samples = new List<Sample>();
         private readonly ManualResetEvent stopEvent = new ManualResetEvent(false);
@@ -434,7 +556,11 @@ namespace InternetMonitor
         private readonly string dnsTestName;
 
         public Engine(Settings settings, LogStore store, int intervalMs, int durationMinutes, bool keepAwake)
+            : this(settings, store, intervalMs, durationMinutes, keepAwake, "") { }
+
+        public Engine(Settings settings, LogStore store, int intervalMs, int durationMinutes, bool keepAwake, string adapterId)
         {
+            AdapterId = adapterId ?? "";
             Settings = settings;
             Store = store;
             IntervalMs = intervalMs;
@@ -452,7 +578,10 @@ namespace InternetMonitor
             for (int i = iGw; i <= iProxy; i++) defs[i].Region = "On site";
             Schema = new Schema();
             Schema.Defs = defs.ToArray();
+            Stats.CheckTests = new int[defs.Count];
+            Stats.CheckOk = new int[defs.Count];
             httpEverOk = new bool[httpCount];
+            httpCert = new CertInfo[httpCount];
             httpLastTested = new DateTime[httpCount];
             httpPausedUntil = new DateTime[httpCount];
 
@@ -488,6 +617,18 @@ namespace InternetMonitor
             lock (samples) { return new List<Sample>(samples); }
         }
 
+        /// <summary>True when the filter is decrypting this web check's HTTPS (its certificate is not the site's own).</summary>
+        public bool IsHttpInspected(int index)
+        {
+            CertInfo c = index >= 0 && index < httpCount ? httpCert[index] : null;
+            return c != null && c.Inspected;
+        }
+
+        public List<CertRecord> CertSnapshot()
+        {
+            lock (Certs) { return new List<CertRecord>(Certs); }
+        }
+
         public bool IsHttpExcluded(int index)
         {
             return healthySamples >= 5 && !httpEverOk[index] && !Settings.Http[index].Service;
@@ -511,7 +652,7 @@ namespace InternetMonitor
             lastTrace = DateTime.Now;
             Task.Factory.StartNew(delegate
             {
-                Trace t = TraceRoute.Run(TraceRoute.DefaultTarget, reason, 1200);
+                Trace t = TraceRoute.Run(TraceRoute.DefaultTarget, reason, 1200, bindTo);
                 lock (Traces) { Traces.Add(t); }
                 Store.AppendTrace(t);
             }, TaskCreationOptions.LongRunning);
@@ -594,6 +735,13 @@ namespace InternetMonitor
                 int sev = St.Severity(s.Status);
                 int before = previous == null ? 0 : St.Severity(previous.Status);
                 if (sev == 2 && before != 2) { st.Outages++; st.CurrentOutageSec = 0; }
+                if (sev == 1 && before != 1) st.DegradedEpisodes++;
+                for (int i = 0; i < s.R.Length && i < st.CheckTests.Length; i++)
+                {
+                    if (!s.R[i].Tested) continue;
+                    st.CheckTests[i]++;
+                    if (s.R[i].Ok) st.CheckOk[i]++;
+                }
                 st.TailSec = s.IntervalMs / 1000.0;
                 st.TailSeverity = sev;
 
@@ -615,8 +763,10 @@ namespace InternetMonitor
             // Adapter details are cheap but not free; proxy auto-detection can be slow.
             if ((now - lastNetRefresh).TotalSeconds >= 10 || !Net.LinkUp)
             {
-                Net = NetInfo.Detect();
+                Net = NetInfo.Detect(AdapterId);
                 lastNetRefresh = now;
+                IPAddress local;
+                if (AdapterId.Length > 0 && Net.LocalIP.Length > 0 && IPAddress.TryParse(Net.LocalIP, out local)) bindTo = local;
             }
             if ((now - lastProxyRefresh).TotalSeconds >= 60)
             {
@@ -625,6 +775,7 @@ namespace InternetMonitor
             }
             NetInfo net = Net;
             ProxyInfo proxy = Proxy;
+            IPAddress bind = bindTo;
             int timeout = Settings.TimeoutMs;
             int shortTimeout = Math.Min(timeout, 1500);
 
@@ -638,21 +789,21 @@ namespace InternetMonitor
                 if (now < httpPausedUntil[i]) continue;
                 if (target.EverySec > 0 && (now - httpLastTested[i]).TotalSeconds < target.EverySec - 0.5) continue;
                 httpLastTested[i] = now;
-                HttpProbe p = new HttpProbe(target, timeout);
+                HttpProbe p = new HttpProbe(target, timeout, bind, proxy.Explicit);
                 httpProbes[i] = p;
                 tasks[i] = Task.Factory.StartNew<CheckResult>(p.Run, TaskCreationOptions.LongRunning);
             }
             for (int i = 0; i < tcpCount; i++)
             {
                 TcpTarget t = Settings.Tcp[i];
-                tasks[httpCount + i] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Tcp(t.Host, t.Port, timeout); }, TaskCreationOptions.LongRunning);
+                tasks[httpCount + i] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Tcp(t.Host, t.Port, timeout, bind); }, TaskCreationOptions.LongRunning);
             }
             if (net.Gateway != null)
                 tasks[iGw] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.PingHost(net.Gateway, 1000); }, TaskCreationOptions.LongRunning);
             if (net.DnsServers.Count > 0)
-                tasks[iDns] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Dns(net.DnsServers, dnsTestName, shortTimeout); }, TaskCreationOptions.LongRunning);
+                tasks[iDns] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Dns(net.DnsServers, dnsTestName, shortTimeout, bind); }, TaskCreationOptions.LongRunning);
             if (proxy.Explicit)
-                tasks[iProxy] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Tcp(proxy.Host, proxy.Port, shortTimeout); }, TaskCreationOptions.LongRunning);
+                tasks[iProxy] = Task.Factory.StartNew<CheckResult>(delegate { return Probes.Tcp(proxy.Host, proxy.Port, shortTimeout, bind); }, TaskCreationOptions.LongRunning);
 
             List<Task> running = new List<Task>();
             foreach (Task<CheckResult> t in tasks) { if (t != null) running.Add(t); }
@@ -669,7 +820,7 @@ namespace InternetMonitor
                 else
                 {
                     // Hard deadline passed (e.g. a DNS lookup that ignores the request timeout).
-                    s.R[i] = CheckResult.Fail("TIMEOUT", timeout + 1500);
+                    s.R[i] = CheckResult.Fail(i < httpCount ? httpProbes[i].StageTimeout : "TIMEOUT", timeout + 1500);
                     if (i < httpCount) httpProbes[i].Abort();
                 }
                 // A site that says "too many requests" is left completely alone for a while.
@@ -677,16 +828,33 @@ namespace InternetMonitor
             }
 
             // Facts picked up along the way.
+            // Whose certificate did each site present? Noted even when the check failed: a certificate
+            // this computer does not trust is itself the sign of a filter decrypting the traffic.
+            for (int i = 0; i < httpCount; i++)
+            {
+                CertInfo cert = httpProbes[i] != null ? httpProbes[i].Cert : null;
+                if (cert == null) continue;
+                CertInfo before = httpCert[i];
+                httpCert[i] = cert;
+                if (before != null && before.Issuer == cert.Issuer && before.Inspected == cert.Inspected && before.Trusted == cert.Trusted) continue;
+                CertRecord rec = new CertRecord();
+                rec.Time = now; rec.Check = Settings.Http[i].Name; rec.Adapter = net.AdapterName;
+                try { rec.Host = new Uri(Settings.Http[i].Url).Host; } catch { }
+                rec.Inspected = cert.Inspected; rec.Trusted = cert.Trusted; rec.Issuer = cert.Issuer; rec.Root = cert.Root; rec.Why = cert.Why;
+                lock (Certs) { if (Certs.Count < 500) Certs.Add(rec); }
+                Store.AppendCert(rec);
+            }
             for (int i = 0; i < httpCount; i++)
             {
                 if (!s.R[i].Ok) continue;
                 httpEverOk[i] = true;
-                if (httpProbes[i].ExternalIP != null) LastExternalIP = httpProbes[i].ExternalIP;
-                if (httpProbes[i].ServedFrom != null) { lock (ServedFrom) { ServedFrom.Add(httpProbes[i].ServedFrom); } }
-                if (httpProbes[i].CertIssuer != null)
+                if (httpProbes[i].ExternalIP != null)
                 {
-                    lock (CertIssuers) { CertIssuers[Settings.Http[i].Name] = httpProbes[i].CertIssuer; }
+                    string ip = httpProbes[i].ExternalIP;
+                    if (LastExternalIP.Length > 0 && LastExternalIP != ip) ExternalIPChanges++;
+                    LastExternalIP = ip;
                 }
+                if (httpProbes[i].ServedFrom != null) { lock (ServedFrom) { ServedFrom.Add(httpProbes[i].ServedFrom); } }
             }
             bool anyTcpOk = false;
             for (int i = 0; i < tcpCount; i++) { if (s.R[httpCount + i].Ok) anyTcpOk = true; }
@@ -699,15 +867,20 @@ namespace InternetMonitor
 
             // Work out the conclusion. A web check that has never once succeeded while the
             // others are fine is assumed to be blocked by filtering policy and is ignored.
-            int counted = 0, ok = 0;
+            int counted = 0, ok = 0, inspCounted = 0, inspOk = 0;
+            List<string> inspectedNames = new List<string>();
             for (int i = 0; i < httpCount; i++)
             {
+                bool inspected = IsHttpInspected(i);
+                if (inspected) inspectedNames.Add(Settings.Http[i].Name);
                 if (IsHttpExcluded(i) || Settings.Http[i].Service || !s.R[i].Tested) continue;
                 counted++;
                 if (s.R[i].Ok) ok++;
+                if (inspected) { inspCounted++; if (s.R[i].Ok) inspOk++; }
             }
+            s.Inspected = string.Join("|", inspectedNames.ToArray());
             // Nothing countable this round (every site paused): fall back on the direct connections.
-            if (counted == 0 && anyTcpOk) { counted = 1; ok = 1; }
+            if (counted == 0 && anyTcpOk) { counted = 1; ok = 1; inspCounted = inspOk = 0; }
             DirectBlockedByPolicy = tcpCount > 0 && !directEverOk && healthySamples >= 5;
 
             Tri gw = !s.R[iGw].Tested || !gatewayEverOk ? Tri.NA : (s.R[iGw].Ok ? Tri.Ok : Tri.Fail);
@@ -715,13 +888,14 @@ namespace InternetMonitor
             Tri px = !s.R[iProxy].Tested ? Tri.NA : (s.R[iProxy].Ok ? Tri.Ok : Tri.Fail);
             Tri direct = tcpCount == 0 ? Tri.NA : anyTcpOk ? Tri.Ok : (directEverOk ? Tri.Fail : Tri.NA);
 
-            s.Status = Diagnosis.Classify(net.LinkUp, ok, counted, gw, dns, px, direct, proxy.Explicit);
+            s.Status = Diagnosis.Classify(net.LinkUp, ok, counted, gw, dns, px, direct, proxy.Explicit, inspOk, inspCounted);
             s.LocalIP = net.LocalIP;
+            s.Adapter = net.AdapterName;
             s.ExternalIP = LastExternalIP;
             if (net.AdapterType == "Wi-Fi")
             {
                 // Link speed changes from moment to moment, so read it fresh rather than from the 10-second cache.
-                NetInfo fresh = (now - lastNetRefresh).TotalSeconds < 1 ? net : NetInfo.Detect();
+                NetInfo fresh = (now - lastNetRefresh).TotalSeconds < 1 ? net : NetInfo.Detect(AdapterId);
                 s.WifiLinkMbps = fresh.AdapterType == "Wi-Fi" ? fresh.LinkMbps : -1;
                 WifiInfo wifi = Wifi.Query();
                 LastWifi = wifi;

@@ -166,6 +166,66 @@ namespace InternetMonitor
         }
     }
 
+    /// <summary>
+    /// A ping that leaves from a stated local address (the .NET Ping class cannot do that).
+    /// Needed so that, on a computer with two network connections, a trace goes out through
+    /// the adapter being tested. IPv4 only; needs no administrator rights.
+    /// </summary>
+    internal static class SourcePing
+    {
+        public const uint Success = 0, TtlExpired = 11013, Failed = uint.MaxValue;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IpOptions { public byte Ttl, Tos, Flags, OptionsSize; public IntPtr OptionsData; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EchoReply
+        {
+            public uint Address, Status, RoundTripTime;
+            public ushort DataSize, Reserved;
+            public IntPtr Data;
+            public IpOptions Options;
+        }
+
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern IntPtr IcmpCreateFile();
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern bool IcmpCloseHandle(IntPtr handle);
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern uint IcmpSendEcho2Ex(IntPtr handle, IntPtr evt, IntPtr apcRoutine, IntPtr apcContext, uint source, uint destination,
+            byte[] data, ushort dataSize, ref IpOptions options, IntPtr replyBuffer, uint replySize, uint timeoutMs);
+
+        /// <summary>Returns the reply's status code (Success, TtlExpired, or another IP_STATUS value) and who answered.</summary>
+        public static uint Send(IPAddress source, IPAddress destination, int ttl, int timeoutMs, out IPAddress from)
+        {
+            from = null;
+            IntPtr handle = IcmpCreateFile();
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return Failed;
+            const int size = 256;
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                byte[] data = new byte[32];
+                IpOptions options = new IpOptions();
+                options.Ttl = (byte)ttl;
+                options.Flags = 0x02;       // don't fragment
+                uint n = IcmpSendEcho2Ex(handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    BitConverter.ToUInt32(source.GetAddressBytes(), 0), BitConverter.ToUInt32(destination.GetAddressBytes(), 0),
+                    data, (ushort)data.Length, ref options, buffer, size, (uint)timeoutMs);
+                if (n == 0) return Failed;
+                EchoReply reply = (EchoReply)Marshal.PtrToStructure(buffer, typeof(EchoReply));
+                from = new IPAddress(BitConverter.GetBytes(reply.Address));
+                return reply.Status;
+            }
+            catch { return Failed; }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                IcmpCloseHandle(handle);
+            }
+        }
+    }
+
     internal static class TraceRoute
     {
         public const string DefaultTarget = "1.1.1.1";
@@ -176,7 +236,10 @@ namespace InternetMonitor
         /// needed). All hops are probed at once, so it finishes in about a second and can be
         /// taken at the very moment an outage starts.
         /// </summary>
-        public static Trace Run(string target, string reason, int timeoutMs)
+        public static Trace Run(string target, string reason, int timeoutMs) { return Run(target, reason, timeoutMs, null); }
+
+        /// <param name="source">Local address of a chosen adapter, so the trace follows the same line as the checks. Null = let Windows choose.</param>
+        public static Trace Run(string target, string reason, int timeoutMs, IPAddress source)
         {
             Trace trace = new Trace();
             trace.Time = DateTime.Now;
@@ -196,7 +259,20 @@ namespace InternetMonitor
                         hop.Hop = ttl;
                         try
                         {
-                            using (Ping ping = new Ping())
+                            if (source != null && source.AddressFamily == address.AddressFamily)
+                            {
+                                Stopwatch sw = Stopwatch.StartNew();
+                                IPAddress from;
+                                uint status = SourcePing.Send(source, address, ttl, timeoutMs, out from);
+                                sw.Stop();
+                                if ((status == SourcePing.Success || status == SourcePing.TtlExpired) && from != null)
+                                {
+                                    hop.Address = from.ToString();
+                                    hop.Ms = (int)sw.ElapsedMilliseconds;
+                                    if (status == SourcePing.Success) reached[ttl - 1] = true;
+                                }
+                            }
+                            else using (Ping ping = new Ping())
                             {
                                 Stopwatch sw = Stopwatch.StartNew();
                                 PingReply reply = ping.Send(address, timeoutMs, new byte[32], new PingOptions(ttl, true));

@@ -22,6 +22,8 @@ namespace InternetMonitor
         public Dictionary<string, string> Regions = new Dictionary<string, string>();   // check key -> where it is based
         public HashSet<string> Service = new HashSet<string>();                         // check keys reported separately
         public List<Trace> Traces = new List<Trace>();
+        public List<CertRecord> Certs = new List<CertRecord>();                         // who issued each site's certificate
+        public int TimeoutMs = 3000;
         public string WifiWhyNot = "";
     }
 
@@ -42,6 +44,28 @@ namespace InternetMonitor
             public int Tests, Ok;
             public List<int> Ms = new List<int>();
             public Dictionary<string, int> Fails = new Dictionary<string, int>();
+
+            // Web checks only: failures while at least one other website still answered,
+            // i.e. trouble with this one site rather than with the connection.
+            public int SoloFails, Episodes;
+            public double SoloSec, CurSec, LongestSec;
+            public bool InEpisode;
+            public DateTime CurStart, LongestAt;
+            public List<DateTime> EpisodeStarts = new List<DateTime>();
+            public Dictionary<string, int> SoloDetails = new Dictionary<string, int>();
+
+            // Web checks only: time spent in each stage, where failures happened, and whether the filter decrypts the site.
+            public List<int> Dns = new List<int>(), Tcp = new List<int>(), Tls = new List<int>();
+            public int FailLookup, FailConnect, FailHandshake, FailReply, FailOther, Slow;
+            public int InspectedTests, InspectedFails;
+            public bool Inspected { get { return InspectedTests * 2 > Tests; } }
+        }
+
+        private sealed class IpAgg
+        {
+            public string Ip;
+            public DateTime First, Last;
+            public double Sec, DownSec, DegSec;
         }
 
         private sealed class Incident
@@ -212,6 +236,12 @@ namespace InternetMonitor
             double monitored = 0, gapSec = 0;
             List<int> allHttpMs = new List<int>();
 
+            // ---- HTTPS inspection: what else was working in the rounds when a decrypted site failed ----
+            int inspRounds = 0, inspFailRounds = 0, inspAllFailRounds = 0, inspRoundsWithControl = 0, inspRoundsControlOk = 0;
+            int inspRoundsDirectTested = 0, inspRoundsDirectOk = 0, inspRoundsDnsTested = 0, inspRoundsDnsOk = 0, inspRoundsGwTested = 0, inspRoundsGwOk = 0;
+            int inspFailTotal = 0, inspFailHandshake = 0;
+            List<int> inspFailTcpMs = new List<int>();
+
             // ---- Wi-Fi: signal over time, time on each access point, moves between them ----
             int[] bWifi = new int[nb];
             for (int b = 0; b < nb; b++) bWifi[b] = -1;
@@ -220,7 +250,14 @@ namespace InternetMonitor
             bool anyWifi = false, anyLink = false;
             List<int>[] bLink = new List<int>[nb];
             int maxLink = 0;
-            HashSet<string> localIps = new HashSet<string>(), externalIps = new HashSet<string>();
+            HashSet<string> localIps = new HashSet<string>(), adapters = new HashSet<string>();
+
+            // ---- public IP address: which one was in use, for how long, and when it changed ----
+            List<IpAgg> ipList = new List<IpAgg>();
+            Dictionary<string, IpAgg> ipByAddress = new Dictionary<string, IpAgg>();
+            List<object> ipChanges = new List<object>();
+            int ipChangeCount = 0;
+            string lastIp = "";
 
             for (int i = 0; i < n; i++)
             {
@@ -230,7 +267,25 @@ namespace InternetMonitor
                 statusSec[s.Status] += w[i];
                 monitored += w[i];
                 if (!string.IsNullOrEmpty(s.LocalIP)) localIps.Add(s.LocalIP);
-                if (!string.IsNullOrEmpty(s.ExternalIP)) externalIps.Add(s.ExternalIP);
+                if (!string.IsNullOrEmpty(s.Adapter)) adapters.Add(s.Adapter);
+                if (!string.IsNullOrEmpty(s.ExternalIP))
+                {
+                    IpAgg ia;
+                    if (!ipByAddress.TryGetValue(s.ExternalIP, out ia))
+                    {
+                        ia = new IpAgg(); ia.Ip = s.ExternalIP; ia.First = s.Time;
+                        ipByAddress[s.ExternalIP] = ia; ipList.Add(ia);
+                    }
+                    ia.Last = s.Time;
+                    ia.Sec += w[i];
+                    if (sev == 2) ia.DownSec += w[i]; else if (sev == 1) ia.DegSec += w[i];
+                    if (lastIp.Length > 0 && lastIp != s.ExternalIP)
+                    {
+                        ipChangeCount++;
+                        ipChanges.Add(new string[] { s.Time.ToString("d MMM HH:mm:ss", CultureInfo.InvariantCulture), lastIp, s.ExternalIP });
+                    }
+                    lastIp = s.ExternalIP;
+                }
 
                 if (s.WifiLinkMbps >= 0)
                 {
@@ -308,12 +363,47 @@ namespace InternetMonitor
                 }
                 int bucket = Math.Min(nb - 1, Math.Max(0, (int)Math.Floor((s.Time - t0).TotalSeconds / step)));
                 int httpSum = 0, httpN = 0;
+                string inspectedNow = "|" + (s.Inspected ?? "") + "|";
+                // This round's evidence for or against an HTTPS inspection fault.
+                int rInspFail = 0, rInspOk = 0, rOtherFail = 0, rOtherOk = 0;
+                bool rDirectOk = false, rDirectTested = false, rDnsOk = false, rDnsTested = false, rGwOk = false, rGwTested = false;
                 for (int c = 0; c < map.Length; c++)
                 {
                     CheckResult r = s.R[c];
                     if (!r.Tested) continue;
                     CheckAgg a = map[c];
                     a.Tests++;
+                    if (a.Kind == "TCP") { rDirectTested = true; if (r.Ok) rDirectOk = true; }
+                    else if (a.Kind == "DNS") { rDnsTested = true; rDnsOk = r.Ok; }
+                    else if (a.Kind == "GW") { rGwTested = true; rGwOk = r.Ok; }
+                    else if (a.Kind == "HTTP")
+                    {
+                        bool decrypted = inspectedNow.IndexOf("|" + a.Name + "|", StringComparison.Ordinal) >= 0;
+                        if (decrypted) { a.InspectedTests++; if (!r.Ok) a.InspectedFails++; }
+                        if (!a.Service)
+                        {
+                            if (decrypted) { if (r.Ok) rInspOk++; else rInspFail++; }
+                            else { if (r.Ok) rOtherOk++; else rOtherFail++; }
+                        }
+                        if (r.Ok)
+                        {
+                            if (r.DnsMs >= 0) a.Dns.Add(r.DnsMs);
+                            if (r.TcpMs >= 0) a.Tcp.Add(r.TcpMs);
+                            if (r.TlsMs >= 0) a.Tls.Add(r.TlsMs);
+                            if (r.Ms > 1000) a.Slow++;
+                        }
+                        else
+                        {
+                            string stage = StageOf(r.Detail);
+                            if (stage == "lookup") a.FailLookup++; else if (stage == "connect") a.FailConnect++;
+                            else if (stage == "handshake") a.FailHandshake++; else if (stage == "reply") a.FailReply++; else a.FailOther++;
+                            if (decrypted && !a.Service)
+                            {
+                                inspFailTotal++;
+                                if (stage == "handshake") { inspFailHandshake++; if (r.TcpMs >= 0) inspFailTcpMs.Add(r.TcpMs); }
+                            }
+                        }
+                    }
                     if (r.Ok)
                     {
                         a.Ok++; a.Ms.Add(r.Ms);
@@ -331,6 +421,37 @@ namespace InternetMonitor
                     }
                 }
                 if (httpN > 0) allHttpMs.Add(httpSum / httpN);
+
+                if (inspectedNow.Length > 2) inspRounds++;
+                if (rInspFail > 0)
+                {
+                    inspFailRounds++;
+                    if (rInspOk == 0) inspAllFailRounds++;
+                    if (rOtherOk + rOtherFail > 0) { inspRoundsWithControl++; if (rOtherFail == 0) inspRoundsControlOk++; }
+                    if (rDirectTested) { inspRoundsDirectTested++; if (rDirectOk) inspRoundsDirectOk++; }
+                    if (rDnsTested) { inspRoundsDnsTested++; if (rDnsOk) inspRoundsDnsOk++; }
+                    if (rGwTested) { inspRoundsGwTested++; if (rGwOk) inspRoundsGwOk++; }
+                }
+
+                // One website failing while another still answers: followed site by site, as episodes.
+                for (int c = 0; c < map.Length; c++)
+                {
+                    CheckAgg a = map[c];
+                    if (a.Kind != "HTTP" || a.Service) continue;
+                    CheckResult r = s.R[c];
+                    if (r.Tested && !r.Ok && httpN > 0)
+                    {
+                        a.SoloFails++;
+                        string why = r.Detail ?? "FAIL";
+                        int prior; a.SoloDetails.TryGetValue(why, out prior); a.SoloDetails[why] = prior + 1;
+                        if (!a.InEpisode) { a.InEpisode = true; a.Episodes++; a.EpisodeStarts.Add(s.Time); a.CurStart = s.Time; a.CurSec = 0; }
+                        a.CurSec += w[i];
+                        a.SoloSec += w[i];
+                        if (a.CurSec > a.LongestSec) { a.LongestSec = a.CurSec; a.LongestAt = a.CurStart; }
+                    }
+                    else a.InEpisode = false;
+                    if (gapAfter) a.InEpisode = false;
+                }
 
                 // incidents: an unbroken run of samples of the same kind (outage, or degraded).
                 // A degraded spell that turns into an outage is two entries, so that outage
@@ -488,6 +609,7 @@ namespace InternetMonitor
                 o["p95"] = a.Ms.Count > 0 ? (object)(int)Math.Round(Percentile(a.Ms, 0.95)) : null;
                 o["max"] = a.Ms.Count > 0 ? (object)a.Ms[a.Ms.Count - 1] : null;
                 o["topFail"] = topN > 0 ? topFail + " (" + topN + ")" : "";
+                o["slow"] = a.Kind == "HTTP" ? (object)a.Slow : null;
                 checkRows.Add(o);
                 if (a.Kind == "HTTP" && !a.Service && a.Ok == 0 && a.Tests >= 5) neverOk.Add(a.Name);
                 if (a.Service && a.Tests > a.Ok)
@@ -496,6 +618,199 @@ namespace InternetMonitor
                 if (a.Kind == "TCP") { anyDirect = true; if (a.Ok > 0) directNeverOk = false; }
             }
             data["checks"] = checkRows;
+
+            // ---- output: websites that failed while the connection stayed up ----------
+            List<object> siteRows = new List<object>();
+            List<string> siteNotes = new List<string>();
+            List<string> troubled = new List<string>();
+            foreach (CheckAgg a in checks)
+            {
+                if (a.Kind != "HTTP" || a.Service || a.SoloFails == 0 || a.Ok == 0) continue;
+                if (a.Inspected && statusSec[St.Inspection] > 0) continue;
+                string topWhy = ""; int topWhyN = 0;
+                foreach (KeyValuePair<string, int> kv in a.SoloDetails) { if (kv.Value > topWhyN) { topWhyN = kv.Value; topWhy = kv.Key; } }
+                double pct = 100.0 * a.SoloFails / a.Tests;
+                string pctText = (pct < 0.1 ? "under 0.1" : pct.ToString("0.#", CultureInfo.InvariantCulture)) + "%";
+                double cycle = RegularCycle(a.EpisodeStarts, Math.Max(30, 4 * slowest / 1000.0));
+
+                Dictionary<string, object> o = new Dictionary<string, object>();
+                o["name"] = a.Name;
+                o["fails"] = a.SoloFails;
+                o["tests"] = a.Tests;
+                o["pct"] = pctText;
+                o["episodes"] = a.Episodes;
+                o["dur"] = Duration(a.SoloSec);
+                o["longest"] = Duration(a.LongestSec);
+                o["longestAt"] = a.LongestAt.ToString(tf, CultureInfo.InvariantCulture);
+                o["why"] = FailWords(topWhy);
+                o["cycle"] = cycle > 0 ? "about every " + About(cycle) : "";
+                siteRows.Add(o);
+
+                // Worth a sentence in the findings only when it is more than the odd lost request.
+                if (a.SoloFails < 3 || (a.SoloFails * 200 < a.Tests && a.Episodes < 3)) continue;
+                troubled.Add(a.Name);
+                string note = a.Name + " failed " + a.SoloFails.ToString("N0", CultureInfo.InvariantCulture) + " of its "
+                    + a.Tests.ToString("N0", CultureInfo.InvariantCulture) + " checks (" + pctText + ", mostly: " + FailWords(topWhy)
+                    + ") while other websites were still answering. That happened in " + a.Episodes + (a.Episodes == 1 ? " episode" : " separate episodes")
+                    + " totalling " + Duration(a.SoloSec) + "; the longest lasted " + Duration(a.LongestSec) + ", starting at "
+                    + a.LongestAt.ToString(tf, CultureInfo.InvariantCulture) + ". The connection itself was up, so this is not counted as an outage, but anything that relies on "
+                    + a.Name + " would have been slow or unreachable at those moments.";
+                if (cycle > 0)
+                    note += " The episodes recur on a regular cycle of about " + About(cycle) + ". A pattern that regular points at something that runs on a timer "
+                        + "(a firewall or web filter refreshing its rules or address lists, a scheduled job, a DNS record being renewed) rather than a random fault on the line.";
+                siteNotes.Add(note);
+            }
+            if (siteRows.Count > 0) data["sites"] = siteRows;
+
+            // ---- output: HTTPS inspection, and where each web request spends its time ----
+            // Latest certificate seen for each check, and every distinct filter certificate.
+            Dictionary<string, CertRecord> certByCheck = new Dictionary<string, CertRecord>();
+            List<string> filterIssuers = new List<string>();
+            List<object> certRows = new List<object>();
+            foreach (CertRecord cr in ctx.Certs)
+            {
+                certByCheck[cr.Check] = cr;
+                string shortIssuer = CertInfo.ShortName(cr.Issuer);
+                if (cr.Inspected && !filterIssuers.Contains(shortIssuer)) filterIssuers.Add(shortIssuer);
+                if (certRows.Count < 60)
+                    certRows.Add(new string[] { cr.Time.ToString("d MMM HH:mm:ss", CultureInfo.InvariantCulture), cr.Check, cr.Host, cr.Adapter,
+                        cr.Inspected ? "Decrypted by filter" : "Site's own", cr.Issuer, cr.Inspected ? cr.Why : "" });
+            }
+            List<object> stageRows = new List<object>();
+            List<string> decryptedNames = new List<string>(), plainNames = new List<string>();
+            int decTests = 0, decFails = 0, plainTests = 0, plainFails = 0;
+            bool anyStage = false;
+            foreach (CheckAgg a in checks)
+            {
+                if (a.Kind != "HTTP" || a.Tests == 0) continue;
+                a.Dns.Sort(); a.Tcp.Sort(); a.Tls.Sort();
+                if (a.Tcp.Count > 0) anyStage = true;
+                CertRecord cr; certByCheck.TryGetValue(a.Name, out cr);
+                string targetUrl; ctx.Targets.TryGetValue(a.Key, out targetUrl);
+                bool plainHttp = targetUrl != null && targetUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
+                bool decrypted = a.Inspected;
+                if (!a.Service)
+                {
+                    if (decrypted) { decryptedNames.Add(a.Name); decTests += a.Tests; decFails += a.Tests - a.Ok; }
+                    else { plainNames.Add(a.Name); plainTests += a.Tests; plainFails += a.Tests - a.Ok; }
+                }
+                List<string> at = new List<string>();
+                if (a.FailLookup > 0) at.Add("name lookup " + a.FailLookup);
+                if (a.FailConnect > 0) at.Add("connecting " + a.FailConnect);
+                if (a.FailHandshake > 0) at.Add("secure handshake " + a.FailHandshake);
+                if (a.FailReply > 0) at.Add("waiting for reply " + a.FailReply);
+                if (a.FailOther > 0) at.Add("other " + a.FailOther);
+                Dictionary<string, object> o = new Dictionary<string, object>();
+                o["name"] = a.Name + (a.Service ? " (service check)" : "");
+                o["decrypted"] = decrypted;
+                o["cert"] = plainHttp ? "None (plain HTTP, not encrypted)" : decrypted && cr != null ? CertInfo.ShortName(cr.Issuer)
+                          : cr != null ? CertInfo.ShortName(cr.Issuer) : decrypted ? "A web filter's" : "Not recorded";
+                o["tests"] = a.Tests;
+                o["fails"] = a.Tests - a.Ok;
+                o["slow"] = a.Slow;
+                o["dns"] = a.Dns.Count > 0 ? (object)(int)Math.Round(Percentile(a.Dns, 0.5)) : null;
+                o["tcp"] = a.Tcp.Count > 0 ? (object)(int)Math.Round(Percentile(a.Tcp, 0.5)) : null;
+                o["tls"] = a.Tls.Count > 0 ? (object)(int)Math.Round(Percentile(a.Tls, 0.5)) : null;
+                o["tlsMax"] = a.Tls.Count > 0 ? (object)a.Tls[a.Tls.Count - 1] : null;
+                o["failedAt"] = string.Join(", ", at.ToArray());
+                stageRows.Add(o);
+            }
+
+            List<string> inspectionNotes = new List<string>();
+            List<string> proof = new List<string>();
+            bool inspectionActive = decryptedNames.Count > 0;
+            if (inspectionActive)
+            {
+                string who = filterIssuers.Count > 0 ? "\u201c" + string.Join("\u201d, \u201c", filterIssuers.ToArray()) + "\u201d" : "a web filter";
+                inspectionNotes.Add("This connection decrypts secure (HTTPS) traffic. The certificate" + (decryptedNames.Count == 1 ? " for " : "s for ")
+                    + List(decryptedNames) + (decryptedNames.Count == 1 ? " was" : " were") + " issued by " + who + " rather than by "
+                    + (decryptedNames.Count == 1 ? "the site\u2019s" : "the sites\u2019") + " own certificate authority, which is how HTTPS inspection by a web filter shows itself."
+                    + (plainNames.Count > 0 ? " " + List(plainNames) + (plainNames.Count == 1 ? " is" : " are") + " not decrypted, which gives a comparison." : ""));
+                if (decFails > 0)
+                {
+                    proof.Add("Decrypted sites (" + List(decryptedNames) + ") failed " + decFails.ToString("N0", CultureInfo.InvariantCulture) + " of "
+                        + decTests.ToString("N0", CultureInfo.InvariantCulture) + " checks."
+                        + (plainTests > 0 ? " Sites that are not decrypted (" + List(plainNames) + ") failed " + plainFails.ToString("N0", CultureInfo.InvariantCulture)
+                            + " of " + plainTests.ToString("N0", CultureInfo.InvariantCulture) + "." : ""));
+                    if (inspFailRounds > 0)
+                    {
+                        if (inspRoundsWithControl > 0)
+                            proof.Add("In " + Of(inspRoundsControlOk, inspRoundsWithControl) + " rounds in which a decrypted site failed, every site that is not decrypted loaded normally at the same moment.");
+                        proof.Add("In " + Of(inspAllFailRounds, inspFailRounds) + " of those rounds, all the decrypted sites failed together.");
+                        List<string> under = new List<string>();
+                        if (inspRoundsDirectTested > 0) under.Add("a direct connection to the internet was made in " + Of(inspRoundsDirectOk, inspRoundsDirectTested));
+                        if (inspRoundsDnsTested > 0) under.Add("the DNS server answered in " + Of(inspRoundsDnsOk, inspRoundsDnsTested));
+                        if (inspRoundsGwTested > 0) under.Add("the gateway replied in " + Of(inspRoundsGwOk, inspRoundsGwTested));
+                        if (under.Count > 0) proof.Add("The network underneath was working: in the same rounds, " + string.Join("; ", under.ToArray()) + ".");
+                    }
+                    if (inspFailHandshake > 0)
+                    {
+                        inspFailTcpMs.Sort();
+                        string share = Of(inspFailHandshake, inspFailTotal);
+                        proof.Add(char.ToUpperInvariant(share[0]) + share.Substring(1) + " failures happened during the secure handshake, after the connection itself had been made"
+                            + (inspFailTcpMs.Count > 0 ? " (typically in " + (int)Math.Round(Percentile(inspFailTcpMs, 0.5)) + " ms)" : "")
+                            + ". A line fault stops the connection being made at all; a connection that is made at once and then never completes its handshake "
+                            + "is waiting on whatever is decrypting it.");
+                    }
+                    bool strong = inspFailRounds >= 3 && (inspRoundsWithControl == 0 || inspRoundsControlOk * 10 >= inspRoundsWithControl * 9)
+                        && (plainTests == 0 || plainFails * 20 <= plainTests) && decFails * 1000 >= decTests;
+                    if (strong)
+                        inspectionNotes.Add("The failures in this period follow the pattern of a fault in that HTTPS inspection, not in the internet line: decrypted sites failed "
+                            + decFails.ToString("N0", CultureInfo.InvariantCulture) + " times while sites that are not decrypted"
+                            + (plainTests > 0 ? " failed " + plainFails.ToString("N0", CultureInfo.InvariantCulture) + " times" : " were not available to compare")
+                            + (inspFailHandshake > 0 ? ", and " + Of(inspFailHandshake, inspFailTotal) + " failures were in the secure handshake after the connection had already been made" : "")
+                            + ". The section \u201cHTTPS inspection\u201d sets out the evidence.");
+
+                    // Do the faults come round on a timer?
+                    List<DateTime> faultStarts = new List<DateTime>();
+                    foreach (Incident inc in incidents) { if (inc.Code == St.Inspection) faultStarts.Add(inc.Start); }
+                    double faultCycle = RegularCycle(faultStarts, Math.Max(30, 4 * slowest / 1000.0));
+                    if (faultCycle > 0)
+                    {
+                        string rhythm = "The HTTPS inspection faults recur on a regular cycle of about " + About(faultCycle)
+                            + ". A pattern that regular points at something on the filter that runs on a timer (a reload of its rules or block lists, "
+                            + "a directory or sign-in refresh, a logging job) rather than a random fault.";
+                        inspectionNotes.Add(rhythm);
+                        proof.Add(rhythm);
+                    }
+                }
+            }
+            if (stageRows.Count > 0 && (inspectionActive || anyStage))
+            {
+                Dictionary<string, object> insp = new Dictionary<string, object>();
+                insp["active"] = inspectionActive;
+                insp["issuers"] = filterIssuers;
+                insp["sites"] = stageRows;
+                insp["proof"] = proof;
+                insp["certLog"] = certRows;
+                insp["timeout"] = (ctx.TimeoutMs / 1000.0).ToString("0.#", CultureInfo.InvariantCulture);
+                data["inspection"] = insp;
+            }
+
+            // ---- output: public IP address ---------------------------------------------
+            meta["publicIp"] = lastIp;
+            meta["publicIpOthers"] = Math.Max(0, ipList.Count - 1);
+            if (ipList.Count > 0)
+            {
+                List<object> ipRows = new List<object>();
+                foreach (IpAgg ia in ipList)
+                {
+                    Dictionary<string, object> o = new Dictionary<string, object>();
+                    o["ip"] = ia.Ip;
+                    o["current"] = ia.Ip == lastIp;
+                    o["first"] = ia.First.ToString(tf, CultureInfo.InvariantCulture);
+                    o["last"] = ia.Last.ToString(tf, CultureInfo.InvariantCulture);
+                    o["dur"] = Duration(ia.Sec);
+                    o["down"] = ia.DownSec > 0 ? Duration(ia.DownSec) : "none";
+                    o["deg"] = ia.DegSec >= 1 ? Duration(ia.DegSec) : "none";
+                    ipRows.Add(o);
+                }
+                data["ips"] = ipRows;
+                data["ipChangeCount"] = ipChangeCount;
+                if (ipChanges.Count > 40) ipChanges = ipChanges.GetRange(ipChanges.Count - 40, 40);
+                ipChanges.Reverse();
+                data["ipChanges"] = ipChanges;
+            }
 
             // ---- output: incidents ----------------------------------------------------
             List<object> incRows = new List<object>();
@@ -565,6 +880,13 @@ namespace InternetMonitor
             {
                 level = "warning"; headline = outages == 1 ? "1 brief outage detected" : outages + " brief outages detected";
             }
+            if (outages == 0 && troubled.Count > 0)
+            {
+                // A site that keeps failing is a finding in its own right, however small its share of the time.
+                level = "warning";
+                headline = "No outages, but " + (troubled.Count == 1 ? troubled[0] + " was" : string.Join(", ", troubled.GetRange(0, troubled.Count - 1).ToArray())
+                    + " and " + troubled[troubled.Count - 1] + " were") + " unreachable at times";
+            }
 
             verdict.Add("Monitored for " + Duration(monitored) + " from " + Environment.MachineName + ". Web access was available for "
                 + ((double)summary["availability"]).ToString("0.###", CultureInfo.InvariantCulture) + "% of that time.");
@@ -578,6 +900,21 @@ namespace InternetMonitor
             if (degSec >= 1)
                 verdict.Add("The connection was degraded (some web checks failing, others working) for " + Duration(degSec)
                     + " across " + degradedCount + (degradedCount == 1 ? " episode." : " episodes."));
+            foreach (string note in inspectionNotes) verdict.Add(note);
+            foreach (string note in siteNotes) verdict.Add(note);
+            if (ipList.Count == 1)
+                verdict.Add("The public IP address was " + lastIp + " throughout.");
+            else if (ipList.Count > 1)
+            {
+                List<string> seenIps = new List<string>();
+                foreach (IpAgg ia in ipList) seenIps.Add(ia.Ip);
+                if (seenIps.Count > 6) { int extra = seenIps.Count - 6; seenIps = seenIps.GetRange(0, 6); seenIps.Add("+" + extra + " more"); }
+                verdict.Add("The public IP address changed " + ipChangeCount + (ipChangeCount == 1 ? " time" : " times") + " (" + string.Join(", ", seenIps.ToArray())
+                    + "; now " + lastIp + "). A change of public address usually means the line reconnected, or traffic moved to a different line or exit point.");
+            }
+            if (adapters.Count > 1)
+                verdict.Add("Checks in this period went out through more than one network adapter (" + Join(adapters)
+                    + "), so the figures blend different connections. Compare runs made on one adapter at a time to tell the connections apart.");
             if (neverOk.Count > 0)
                 verdict.Add("The web check" + (neverOk.Count == 1 ? " " : "s ") + string.Join(", ", neverOk.ToArray())
                     + " never succeeded. That usually means the site is blocked by filtering policy, so "
@@ -674,7 +1011,14 @@ namespace InternetMonitor
             // ---- output: environment ---------------------------------------------------
             List<KeyValuePair<string, string>> env = new List<KeyValuePair<string, string>>(ctx.Environment);
             if (localIps.Count > 0) env.Add(new KeyValuePair<string, string>("Local IP address" + (localIps.Count > 1 ? "es" : ""), Join(localIps)));
-            if (externalIps.Count > 0) env.Add(new KeyValuePair<string, string>("Public IP address" + (externalIps.Count > 1 ? "es" : ""), Join(externalIps)));
+            if (adapters.Count > 1) env.Add(new KeyValuePair<string, string>("Adapters used in this period", Join(adapters)));
+            if (ipList.Count > 0)
+            {
+                // Insertion-ordered, so the addresses read in the order they were first seen.
+                HashSet<string> seen = new HashSet<string>();
+                foreach (IpAgg ia in ipList) seen.Add(ia.Ip);
+                env.Add(new KeyValuePair<string, string>("Public IP address" + (ipList.Count > 1 ? "es" : ""), Join(seen)));
+            }
             env.Add(new KeyValuePair<string, string>("Checks recorded", n.ToString("N0", CultureInfo.InvariantCulture)));
             data["env"] = PairList(env);
             return data;
@@ -731,6 +1075,92 @@ namespace InternetMonitor
                 rows.Add(o);
             }
             return rows;
+        }
+
+        /// <summary>
+        /// Looks for a regular rhythm in when episodes began. Returns the cycle length in
+        /// seconds, or 0 when there is none. Missed beats are allowed for (a gap of two or
+        /// three cycles still fits), but most gaps must be a single cycle.
+        /// </summary>
+        internal static double RegularCycle(List<DateTime> starts, double shortestCycle)
+        {
+            if (starts.Count < 6) return 0;
+            int from = Math.Max(0, starts.Count - 400);
+            List<double> gaps = new List<double>();
+            for (int i = from + 1; i < starts.Count; i++) gaps.Add((starts[i] - starts[i - 1]).TotalSeconds);
+            List<double> sorted = new List<double>(gaps);
+            sorted.Sort();
+            // At least 40% of gaps must be one cycle long, so the cycle cannot be longer than this.
+            double longestCandidate = sorted[Math.Min(sorted.Count - 1, (int)(sorted.Count * 0.6))];
+
+            double tried = -1;
+            foreach (double g in sorted)
+            {
+                if (g < shortestCycle) continue;
+                if (g > longestCandidate) break;
+                if (tried > 0 && g < tried * 1.05) continue;      // as good as the candidate just tried
+                tried = g;
+                double tolerance = Math.Max(6, g * 0.05);
+                int match = 0, single = 0;
+                double sum = 0;
+                foreach (double x in gaps)
+                {
+                    int k = (int)Math.Round(x / g);
+                    if (k < 1 || k > 6 || Math.Abs(x - k * g) > tolerance) continue;
+                    match++;
+                    if (k == 1) single++;
+                    sum += x / k;
+                }
+                if (match * 100 >= gaps.Count * 85 && single * 100 >= gaps.Count * 40) return sum / match;
+            }
+            return 0;
+        }
+
+        private static string About(double sec)
+        {
+            if (sec < 90) return Math.Round(sec).ToString(CultureInfo.InvariantCulture) + " seconds";
+            if (sec < 5400)
+            {
+                double m = Math.Round(sec / 60 * 2) / 2;
+                return m.ToString("0.#", CultureInfo.InvariantCulture) + (m == 1 ? " minute" : " minutes");
+            }
+            double h = Math.Round(sec / 3600 * 10) / 10;
+            return h.ToString("0.#", CultureInfo.InvariantCulture) + (h == 1 ? " hour" : " hours");
+        }
+
+        // A failure code from the log in plain words, e.g. TIMEOUT -> "timed out".
+        private static string FailWords(string detail)
+        {
+            string words = MainForm.Friendly(detail ?? "");
+            int paren = words.IndexOf(" (");
+            if (paren > 0) words = words.Substring(0, paren);
+            return words.Length == 0 ? "failed" : (words == detail ? words : words.ToLowerInvariant());
+        }
+
+        // Which stage of a web request a failure code belongs to.
+        internal static string StageOf(string detail)
+        {
+            switch (detail ?? "")
+            {
+                case "DNS_FAIL": case "DNS_TIMEOUT": case "PROXY_DNS_FAIL": return "lookup";
+                case "CONNECT_FAIL": case "CONNECT_TIMEOUT": case "REFUSED": case "UNREACHABLE": return "connect";
+                case "TLS_TIMEOUT": case "TLS_RESET": case "TLS_ERROR": return "handshake";
+                case "RESPONSE_TIMEOUT": case "CONNECTION_RESET": return "reply";
+                default: return "other";
+            }
+        }
+
+        private static string Of(int part, int whole)
+        {
+            return part == whole ? (whole == 1 ? "the 1" : "all " + whole.ToString("N0", CultureInfo.InvariantCulture))
+                : part.ToString("N0", CultureInfo.InvariantCulture) + " of the " + whole.ToString("N0", CultureInfo.InvariantCulture);
+        }
+
+        private static string List(List<string> names)
+        {
+            if (names.Count == 0) return "";
+            if (names.Count == 1) return names[0];
+            return string.Join(", ", names.GetRange(0, names.Count - 1).ToArray()) + " and " + names[names.Count - 1];
         }
 
         private static string Join(HashSet<string> set)

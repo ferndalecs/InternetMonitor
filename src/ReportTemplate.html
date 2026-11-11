@@ -120,6 +120,8 @@
   dl.env dt { color: var(--ink2); } dl.env dd { margin: 0; overflow-wrap: anywhere; }
   .howto p, .howto li { color: var(--ink2); font-size: 13px; max-width: 90ch; }
   .howto ul { padding-left: 18px; margin: 6px 0; }
+  ul.proof { padding-left: 18px; margin: 0 0 14px; max-width: 92ch; }
+  ul.proof li { margin-bottom: 5px; }
   .howto b { color: var(--ink); font-weight: 600; }
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 22px; }
   .empty { padding: 30px 0; color: var(--ink2); text-align: center; }
@@ -204,6 +206,7 @@ var wrap = el("div", { cls: "wrap" });
     el("span", {}, [el("b", { text: D.mode === "fleet" ? "Covers: " : "Computer: " }), m.computer]),
     s ? el("span", {}, [el("b", { text: "Period: " }), s.start + " → " + s.end]) : null,
     el("span", {}, [el("b", { text: "Scope: " }), m.period]),
+    m.publicIp ? el("span", {}, [el("b", { text: "Public IP: " }), m.publicIp + (m.publicIpOthers ? " (+" + m.publicIpOthers + " earlier)" : "")]) : null,
     el("span", {}, [el("b", { text: "Generated: " }), m.generated])
   ]);
   var head = el("header", { cls: "top" }, [el("div", { cls: "wrap" }, [
@@ -236,7 +239,7 @@ if (D.empty) {
 } else if (D.mode === "fleet") {
   renderBanner(); renderFleet();
 } else {
-  renderBanner(); renderTiles(); renderTimeline(); renderCauseAndHeat(); renderIncidents(); renderTraces(); renderWifi(); renderChecks();
+  renderBanner(); renderTiles(); renderTimeline(); renderInspection(); renderSites(); renderCauseAndHeat(); renderIncidents(); renderTraces(); renderWifi(); renderIps(); renderChecks();
 }
 if (D.mode !== "fleet") renderEnvironment();
 wrap.appendChild(el("footer", { text: "Internet Monitor " + D.meta.version + (D.meta.logFiles && D.meta.logFiles.length ? " · Source data: " + D.meta.logFiles.join(", ") : "") }));
@@ -703,6 +706,95 @@ function renderWifi() {
   }
 }
 
+/* ---------- HTTPS inspection, and where each web request spends its time ---------- */
+function renderInspection() {
+  var I = D.inspection;
+  if (!I) return;
+  var c = card(I.active ? "HTTPS inspection" : "Web requests, stage by stage",
+    I.active
+      ? "A web filter on this connection decrypts secure traffic: it answers in place of the real website and presents a certificate of its own. "
+        + "The table shows which of the tested sites it decrypts, and at which stage their requests failed. A request has " + I.timeout + " seconds to finish."
+      : "Every web request is timed in stages: looking the name up, connecting, the secure handshake, and waiting for the reply. "
+        + "The stage at which a request fails shows where the fault lies. No HTTPS inspection was detected: every site presented its own certificate.");
+  if (I.proof && I.proof.length) {
+    var ul = el("ul", { cls: "proof" });
+    I.proof.forEach(function (t) { ul.appendChild(el("li", { text: t })); });
+    c.appendChild(ul);
+  }
+  var tb = el("tbody");
+  I.sites.forEach(function (x) {
+    tb.appendChild(el("tr", {}, [
+      el("td", {}, [el("span", { cls: "badge" }, [el("span", { cls: "dot " + (x.decrypted ? "s1" : "s9") }), x.name])]),
+      el("td", { text: x.decrypted ? "Yes" : "No" }), el("td", { cls: "small", text: x.cert }),
+      el("td", { cls: "num", text: num(x.fails) + " of " + num(x.tests) }), el("td", { cls: "num", text: num(x.slow) }),
+      el("td", { cls: "num", text: num(x.dns) }), el("td", { cls: "num", text: num(x.tcp) }), el("td", { cls: "num", text: num(x.tls) }),
+      el("td", { cls: "num", text: num(x.tlsMax) }), el("td", { cls: "small", text: x.failedAt || "–" })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Website" }), el("th", { text: "Decrypted" }), el("th", { text: "Certificate issued by" }),
+    el("th", { cls: "num", text: "Failed" }), el("th", { cls: "num", text: "Slow (over 1 s)" }),
+    el("th", { cls: "num", text: "Lookup ms" }), el("th", { cls: "num", text: "Connect ms" }), el("th", { cls: "num", text: "Handshake ms" }),
+    el("th", { cls: "num", text: "Slowest handshake" }), el("th", { text: "Failures happened while" })])]), tb])]));
+  c.appendChild(el("p", { cls: "small", text: "Lookup, connect and handshake figures are the typical (median) time for requests that succeeded." }));
+  if (I.certLog && I.certLog.length) {
+    var cb = el("tbody");
+    I.certLog.forEach(function (r) {
+      cb.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: r[0] }), el("td", { text: r[1] }), el("td", { cls: "small", text: r[2] }), el("td", { cls: "small", text: r[3] }),
+        el("td", { cls: "nowrap", text: r[4] }), el("td", { cls: "small", text: r[5] })]));
+    });
+    c.appendChild(el("details", {}, [el("summary", { text: "Show the certificates as recorded" }),
+      el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "First seen" }), el("th", { text: "Check" }), el("th", { text: "Site" }),
+        el("th", { text: "Adapter" }), el("th", { text: "Certificate" }), el("th", { text: "Issuer, exactly as presented" })])]), cb])])]));
+  }
+}
+
+/* ---------- one website failing while the others answered ---------- */
+function renderSites() {
+  if (!D.sites || !D.sites.length) return;
+  var c = card("Websites that failed while the connection was up",
+    "Checks of one website that failed at a moment when at least one other website answered. These are not outages, so they do not lower the availability figure, "
+    + "but people using that website would have noticed. Each episode is also listed in the incident log as Degraded.");
+  var tb = el("tbody");
+  D.sites.forEach(function (x) {
+    tb.appendChild(el("tr", {}, [
+      el("td", {}, [el("span", { cls: "badge" }, [el("span", { cls: "dot s1" }), x.name])]),
+      el("td", { cls: "num", text: num(x.fails) + " of " + num(x.tests) }), el("td", { cls: "num", text: x.pct }),
+      el("td", { cls: "num", text: num(x.episodes) }), el("td", { cls: "num", text: x.dur }),
+      el("td", { cls: "num", text: x.longest }), el("td", { cls: "nowrap", text: x.longestAt }),
+      el("td", { cls: "small", text: x.why }), el("td", { cls: "small", text: x.cycle || "no regular pattern" })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Website" }), el("th", { cls: "num", text: "Checks failed" }), el("th", { cls: "num", text: "Share" }),
+    el("th", { cls: "num", text: "Episodes" }), el("th", { cls: "num", text: "Time affected" }), el("th", { cls: "num", text: "Longest" }),
+    el("th", { text: "Longest began" }), el("th", { text: "Usual failure" }), el("th", { text: "Recurs" })])]), tb])]));
+}
+
+/* ---------- public IP address ---------- */
+function renderIps() {
+  if (!D.ips || !D.ips.length) return;
+  var changes = D.ipChangeCount || 0;
+  var c = card("Public IP address",
+    "The address the rest of the internet saw this network as, read from Cloudflare's reply to each check. "
+    + (D.ips.length === 1 ? "It did not change during the period." : "It changed " + changes + (changes === 1 ? " time." : " times.")));
+  var tb = el("tbody");
+  D.ips.forEach(function (x) {
+    tb.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: x.ip + (x.current && D.ips.length > 1 ? " (latest)" : "") }),
+      el("td", { cls: "nowrap", text: x.first }), el("td", { cls: "nowrap", text: x.last }), el("td", { cls: "num", text: x.dur }),
+      el("td", { cls: "num", text: x.down }), el("td", { cls: "num", text: x.deg })]));
+  });
+  c.appendChild(el("div", { cls: "scroll" }, [el("table", {}, [el("thead", {}, [el("tr", {}, [
+    el("th", { text: "Address" }), el("th", { text: "First seen" }), el("th", { text: "Last seen" }), el("th", { cls: "num", text: "Time in use" }),
+    el("th", { cls: "num", text: "Outage time" }), el("th", { cls: "num", text: "Degraded time" })])]), tb])]));
+  if (D.ipChanges && D.ipChanges.length) {
+    var cb = el("tbody");
+    D.ipChanges.forEach(function (r) {
+      cb.appendChild(el("tr", {}, [el("td", { cls: "nowrap", text: r[0] }), el("td", { cls: "nowrap", text: r[1] }), el("td", { cls: "nowrap", text: r[2] })]));
+    });
+    c.appendChild(el("details", {}, [el("summary", { text: "Show when the address changed" }),
+      el("div", { cls: "scroll" }, [el("table", { cls: "narrow" }, [el("thead", {}, [el("tr", {}, [el("th", { text: "Time" }), el("th", { text: "From" }), el("th", { text: "To" })])]), cb])])]));
+  }
+}
+
 /* ---------- per-check results ---------- */
 function renderChecks() {
   var c = card("Results for each check", "Web requests travel the same route as a browser (through the web filter or proxy). Direct connections, the gateway ping and the DNS query are used to work out where a fault lies. Services marked Global (US-run) belong to American companies but answer from their nearest site, which from the UK is normally London.");
@@ -734,7 +826,7 @@ function renderEnvironment() {
     ul.appendChild(el("li", {}, [el("b", { text: s.label + ". " }), s.explain]));
   });
   how.appendChild(ul);
-  how.appendChild(el("p", { text: "Availability is the share of monitored time that was not an outage. Degraded time still counts as available. Periods with no data (computer asleep or monitor closed) are left out rather than guessed." }));
+  how.appendChild(el("p", { text: "Availability is the share of monitored time that was not an outage. Degraded time still counts as available, which is why a single website can fail repeatedly while availability stays at 100%; failures like that get a section of their own. Periods with no data (computer asleep or monitor closed) are left out rather than guessed." }));
   two.appendChild(how);
 }
 </script>

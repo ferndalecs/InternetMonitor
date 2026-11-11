@@ -182,12 +182,13 @@ namespace InternetMonitor
         private string lastReportPath;
 
         private StatusDot dot;
-        private Label lblStatus, lblExplain, lblElapsed;
-        private Label tileAvail, tileOutages, tileDown, tileResp, tileRespCaption;
+        private Label lblStatus, lblExplain, lblElapsed, lblIp;
+        private Label tileAvail, tileOutages, tileDown, tileDeg, tileDegCaption, tileResp, tileRespCaption;
         private LiveChart chart;
         private Label lblWifi;
         private ListView list;
-        private ComboBox cboInterval, cboDuration;
+        private ComboBox cboInterval, cboDuration, cboAdapter;
+        private readonly List<string> adapterIds = new List<string>();   // one per cboAdapter item; "" = automatic
         private CheckBox chkAwake;
         private Button btnStart, btnReport, btnFolder;
         private Label lblFooter;
@@ -225,7 +226,7 @@ namespace InternetMonitor
             Font = new Font("Segoe UI", 9f);
             BackColor = Theme.Page;
             ForeColor = Theme.Ink;
-            ClientSize = new Size(760, 674);
+            ClientSize = new Size(760, 730);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -268,13 +269,24 @@ namespace InternetMonitor
             lblExplain.ForeColor = Theme.Ink2;
             lblExplain.Font = new Font("Segoe UI", 8.5f);
             status.Controls.Add(lblExplain);
+            // The address the rest of the internet sees this network as (top right of the status card).
+            lblIp = new Label();
+            lblIp.SetBounds(396, 12, 320, 18);
+            lblIp.TextAlign = ContentAlignment.MiddleRight;
+            lblIp.Font = new Font("Segoe UI", 8.5f);
+            lblIp.ForeColor = Theme.Ink2;
+            lblIp.BackColor = Theme.Card;
+            lblIp.AutoEllipsis = true;
+            status.Controls.Add(lblIp);
 
             // stat tiles
-            int tw = 173, gap = 12;
+            int tw = 137, gap = 10;
             tileAvail = MakeTile(16 + 0 * (tw + gap), 148, tw, "Availability");
             tileOutages = MakeTile(16 + 1 * (tw + gap), 148, tw, "Outages");
             tileDown = MakeTile(16 + 2 * (tw + gap), 148, tw, "Downtime");
-            tileResp = MakeTile(16 + 3 * (tw + gap), 148, tw + 1, "Response time");
+            tileDeg = MakeTile(16 + 3 * (tw + gap), 148, tw, "Degraded");
+            tileDegCaption = (Label)tileDeg.Tag;
+            tileResp = MakeTile(16 + 4 * (tw + gap), 148, tw + 3, "Response");
             tileRespCaption = (Label)tileResp.Tag;
 
             // live chart
@@ -293,29 +305,37 @@ namespace InternetMonitor
             chartCard.Controls.Add(chart);
 
             // checks list
-            Panel listCard = MakeCard(16, 338, 728, 224);
+            Panel listCard = MakeCard(16, 338, 728, 246);
             list = new ListView();
-            list.SetBounds(6, 4, 716, 216);
+            list.SetBounds(6, 4, 716, 238);
             list.View = View.Details;
             list.FullRowSelect = true;
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.BorderStyle = BorderStyle.None;
             list.ShowItemToolTips = true;
             list.Columns.Add("Check", 166);
-            list.Columns.Add("Based", 98);
-            list.Columns.Add("Tests", 232);
+            list.Columns.Add("Based", 96);
+            list.Columns.Add("Tests", 174);
             list.Columns.Add("Result", 152);
-            list.Columns.Add("Time", 58, HorizontalAlignment.Right);
+            list.Columns.Add("Time", 56, HorizontalAlignment.Right);
+            list.Columns.Add("Success", 62, HorizontalAlignment.Right);
             typeof(Control).GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(list, true, null);
             listCard.Controls.Add(list);
 
             // options (set before the run)
-            Label l1 = MakeLabel("Check frequency", 16, 576, 9f, false, Theme.Ink2, this);
+            // Which network connection to test. Matters on a computer with two (two lines, or wired plus Wi-Fi).
+            Label l0 = MakeLabel("Network adapter", 16, 598, 9f, false, Theme.Ink2, this);
+            l0.BackColor = Theme.Page;
+            cboAdapter = MakeCombo(118, 594, 626, new string[0]);
+            FillAdapters(NetInfo.Find(settings.Adapter));
+            cboAdapter.DropDown += delegate { FillAdapters(null); };     // pick up anything plugged in since
+
+            Label l1 = MakeLabel("Check frequency", 16, 632, 9f, false, Theme.Ink2, this);
             l1.BackColor = Theme.Page;
-            cboInterval = MakeCombo(118, 572, 392, IntervalNames);
-            Label l2 = MakeLabel("Run for", 524, 576, 9f, false, Theme.Ink2, this);
+            cboInterval = MakeCombo(118, 628, 392, IntervalNames);
+            Label l2 = MakeLabel("Run for", 524, 632, 9f, false, Theme.Ink2, this);
             l2.BackColor = Theme.Page;
-            cboDuration = MakeCombo(576, 572, 168, DurationNames);
+            cboDuration = MakeCombo(576, 628, 168, DurationNames);
 
             int idx = 0;
             int ms;
@@ -326,16 +346,16 @@ namespace InternetMonitor
 
             chkAwake = new CheckBox();
             chkAwake.Text = "Keep this computer awake while monitoring";
-            chkAwake.SetBounds(18, 614, 300, 24);
+            chkAwake.SetBounds(18, 670, 300, 24);
             chkAwake.Checked = settings.KeepAwake;
             chkAwake.ForeColor = Theme.Ink2;
             Controls.Add(chkAwake);
 
-            btnFolder = MakeButton("Open folder", 368, 608, 112, false);
+            btnFolder = MakeButton("Open folder", 368, 664, 112, false);
             btnFolder.Click += delegate { OpenPath(store.Root); };
-            btnReport = MakeButton("View report  ▾", 488, 608, 122, false);
+            btnReport = MakeButton("View report  ▾", 488, 664, 122, false);
             btnReport.Click += delegate { reportMenu.Show(btnReport, new Point(0, btnReport.Height)); };
-            btnStart = MakeButton("Start monitoring", 618, 608, 126, true);
+            btnStart = MakeButton("Start monitoring", 618, 664, 126, true);
             btnStart.Click += delegate { if (engine != null && engine.IsRunning) StopMonitoring(); else StartMonitoring(); };
             AcceptButton = btnStart;
 
@@ -359,7 +379,7 @@ namespace InternetMonitor
             });
 
             lblFooter = new Label();
-            lblFooter.SetBounds(16, 650, 728, 18);
+            lblFooter.SetBounds(16, 706, 728, 18);
             lblFooter.ForeColor = Theme.Muted;
             lblFooter.Font = new Font("Segoe UI", 8f);
             lblFooter.AutoEllipsis = true;
@@ -382,11 +402,44 @@ namespace InternetMonitor
             // (it scrolls), so the Start button can never end up off-screen.
             listCard.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
-            foreach (Control c in new Control[] { l1, l2, cboInterval, cboDuration, chkAwake, btnFolder, btnReport, btnStart, lblFooter })
+            foreach (Control c in new Control[] { l0, cboAdapter, l1, l2, cboInterval, cboDuration, chkAwake, btnFolder, btnReport, btnStart, lblFooter })
                 c.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             int chrome = Height - ClientSize.Height;
             int room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - chrome - (int)(8 * k);
             if (ClientSize.Height > room) ClientSize = new Size(ClientSize.Width, Math.Max(room, (int)(480 * k)));
+        }
+
+        /// <summary>
+        /// Lists the adapters that have a route out (a default gateway). The current choice is
+        /// kept across a refresh; "select" overrides it (settings file or command line).
+        /// </summary>
+        private void FillAdapters(NetInfo select)
+        {
+            string wanted = select != null ? select.Id
+                : cboAdapter.SelectedIndex >= 0 && cboAdapter.SelectedIndex < adapterIds.Count ? adapterIds[cboAdapter.SelectedIndex] : "";
+            List<NetInfo> all = NetInfo.All();
+            NetInfo auto = NetInfo.Detect();
+
+            cboAdapter.BeginUpdate();
+            cboAdapter.Items.Clear();
+            adapterIds.Clear();
+            cboAdapter.Items.Add("Automatic: let Windows choose" + (auto.AdapterName.Length > 0 ? " (at the moment: " + auto.AdapterName + ")" : ""));
+            adapterIds.Add("");
+            foreach (NetInfo n in all)
+            {
+                if (n.Gateway == null && n.Id != wanted) continue;
+                cboAdapter.Items.Add(n.AdapterName + "  ·  " + n.LocalIP + (n.Gateway != null ? "  ·  gateway " + n.Gateway : "  ·  no gateway")
+                    + "  ·  " + n.Description);
+                adapterIds.Add(n.Id);
+            }
+            int index = adapterIds.IndexOf(wanted);
+            cboAdapter.SelectedIndex = index >= 0 ? index : 0;
+            cboAdapter.EndUpdate();
+        }
+
+        private string SelectedAdapterId
+        {
+            get { return cboAdapter.SelectedIndex >= 0 && cboAdapter.SelectedIndex < adapterIds.Count ? adapterIds[cboAdapter.SelectedIndex] : ""; }
         }
 
         private Label MakeLabel(string text, int x, int y, float size, bool bold, Color color, Control parent)
@@ -491,6 +544,15 @@ namespace InternetMonitor
                 int n;
                 if (a == "start") start = true;
                 else if (a == "minimized" || a == "minimised") WindowState = FormWindowState.Minimized;
+                else if (a.StartsWith("adapter:"))
+                {
+                    // /adapter:"Ethernet 2"  or  /adapter:192.168.1.17  or  /adapter:auto
+                    string v = raw.Substring(raw.IndexOf(':') + 1).Trim().Trim('"');
+                    NetInfo found = NetInfo.Find(v);
+                    if (found != null) FillAdapters(found);
+                    else if (v.Equals("auto", StringComparison.OrdinalIgnoreCase)) cboAdapter.SelectedIndex = 0;
+                    else adapterProblem = "The network adapter “" + v + "” was not found, so monitoring was not started.";
+                }
                 else if (a.StartsWith("interval:"))
                 {
                     string v = a.Substring(9);
@@ -511,25 +573,38 @@ namespace InternetMonitor
                     if (i >= 0) cboDuration.SelectedIndex = i;
                 }
             }
+            // Never fall back silently to another line: that would produce a report about the wrong connection.
+            if (adapterProblem == null && settings.Adapter.Length > 0 && NetInfo.Find(settings.Adapter) == null && SelectedAdapterId.Length == 0)
+                adapterProblem = "The network adapter “" + settings.Adapter + "” named in InternetMonitor.ini was not found.";
+            if (adapterProblem != null)
+            {
+                lblExplain.Text = adapterProblem + " Choose one under Network adapter, then press Start.";
+                return;
+            }
             if (start) StartMonitoring();
         }
+
+        private string adapterProblem;
 
         private void StartMonitoring()
         {
             int interval = IntervalValues[cboInterval.SelectedIndex];
             int minutes = DurationValues[cboDuration.SelectedIndex];
-            engine = new Engine(settings, store, interval, minutes, chkAwake.Checked);
+            engine = new Engine(settings, store, interval, minutes, chkAwake.Checked, SelectedAdapterId);
             engine.SampleTaken += delegate(Sample s) { Post(delegate { OnSample(s); }); };
             engine.Stopped += delegate(bool timedOut) { Post(delegate { OnStopped(timedOut); }); };
 
             chart.Clear();
             chart.IdleText = "Running the first checks…";
             FillList(engine.Schema, null);
-            tileAvail.Text = tileOutages.Text = tileDown.Text = tileResp.Text = "–";
+            tileAvail.Text = tileOutages.Text = tileDown.Text = tileDeg.Text = tileResp.Text = "–";
+            tileDegCaption.Text = "Degraded";
+            tileRespCaption.Text = "Response";
+            lblIp.Text = "";
             dot.DotColor = Theme.Idle;
             lblStatus.Text = "Starting…";
             lblExplain.Text = "Running the first set of checks.";
-            cboInterval.Enabled = cboDuration.Enabled = chkAwake.Enabled = false;
+            cboAdapter.Enabled = cboInterval.Enabled = cboDuration.Enabled = chkAwake.Enabled = false;
             btnStart.Text = "Stop monitoring";
             StyleButton(btnStart, false);
             lastReportPath = null;
@@ -572,31 +647,92 @@ namespace InternetMonitor
             int sev = St.Severity(s.Status);
             dot.DotColor = Theme.ForSeverity(sev);
             lblStatus.Text = St.Label(s.Status);
-            lblExplain.Text = St.Explain(s.Status);
+            lblExplain.Text = s.Status == St.Degraded ? ExplainDegraded(s) : s.Status == St.Inspection ? ExplainInspection(s) : St.Explain(s.Status);
             Text = St.Label(s.Status) + " - " + AppInfo.Name;
 
             SessionStats st = engine.Stats;
-            double avail, down; int outages, last, avg;
+            double avail, down, deg; int outages, degCount, last, avg;
+            int[] tests, oks;
             lock (st)
             {
                 avail = st.AvailabilityPct; down = st.TotalDownSec; outages = st.Outages; last = st.LastResponseMs;
+                deg = st.TotalDegradedSec; degCount = st.DegradedEpisodes;
                 avg = st.ResponseCount > 0 ? (int)(st.ResponseSum / st.ResponseCount) : -1;
+                tests = (int[])st.CheckTests.Clone(); oks = (int[])st.CheckOk.Clone();
             }
             tileAvail.Text = avail >= 99.995 ? "100%" : avail.ToString("0.00") + "%";
             tileOutages.Text = outages.ToString();
             tileOutages.ForeColor = outages > 0 ? Theme.Critical : Theme.Ink;
             tileDown.Text = down < 0.5 ? "None" : ReportBuilder.Duration(down);
+            // Degraded time still counts as available, so it gets a figure of its own.
+            tileDeg.Text = degCount == 0 ? "None" : ReportBuilder.Duration(deg);
+            tileDegCaption.Text = degCount == 0 ? "Degraded" : "Degraded (" + degCount + (degCount == 1 ? " time)" : " times)");
             tileResp.Text = last >= 0 ? last + " ms" : "–";
-            tileRespCaption.Text = avg >= 0 ? "Response time (avg " + avg + " ms)" : "Response time";
+            tileRespCaption.Text = avg >= 0 ? "Response (avg " + avg + " ms)" : "Response";
+
+            string ip = s.ExternalIP ?? "";
+            int ipChanges = engine.ExternalIPChanges;
+            lblIp.Text = ip.Length == 0 ? "Public IP not known yet"
+                       : "Public IP  " + ip + (ipChanges > 0 ? "  (changed " + ipChanges + " times)" : "");
 
             chart.Add(s.Time, sev, last);
             lblWifi.Text = s.WifiBssid.Length > 0 ? "Wi-Fi " + s.WifiSignal + "%  \u00b7  AP " + s.WifiBssid
                          : s.WifiLinkMbps >= 0 ? "Wi-Fi link " + s.WifiLinkMbps + " Mbps" : "";
-            FillList(s.Schema, s);
+            FillList(s.Schema, s, tests, oks);
             SetFooter();
         }
 
-        private void FillList(Schema schema, Sample s)
+        // Says which sites are affected and which are not, which is the whole argument in one line.
+        private string ExplainInspection(Sample s)
+        {
+            List<string> failing = new List<string>(), working = new List<string>();
+            for (int i = 0; i < s.Schema.Defs.Length; i++)
+            {
+                CheckDef d = s.Schema.Defs[i];
+                if (d.Kind != "HTTP" || d.Service || !s.R[i].Tested) continue;
+                if (engine != null && engine.IsHttpExcluded(i)) continue;
+                if (s.R[i].Ok) working.Add(d.Name); else failing.Add(d.Name);
+            }
+            if (failing.Count == 0) return St.Explain(s.Status);
+            return "The sites the web filter decrypts (" + string.Join(", ", failing.ToArray()) + ") are not loading, while "
+                + (working.Count > 0 ? "the ones it leaves alone (" + string.Join(", ", working.ToArray()) + ") and " : "")
+                + "the connection underneath still work. That points at the filter's HTTPS inspection, not the internet line.";
+        }
+
+        // Names the web checks that are failing, so "Degraded" says which site is in trouble.
+        private string ExplainDegraded(Sample s)
+        {
+            List<string> failing = new List<string>();
+            string detail = null;
+            bool sameDetail = true;
+            for (int i = 0; i < s.Schema.Defs.Length; i++)
+            {
+                CheckDef d = s.Schema.Defs[i];
+                if (d.Kind != "HTTP" || d.Service || !s.R[i].Tested || s.R[i].Ok) continue;
+                if (engine != null && engine.IsHttpExcluded(i)) continue;
+                failing.Add(d.Name);
+                if (detail == null) detail = s.R[i].Detail; else if (detail != s.R[i].Detail) sameDetail = false;
+            }
+            if (failing.Count == 0) return St.Explain(s.Status);
+
+            string names = failing.Count == 1 ? failing[0]
+                : string.Join(", ", failing.GetRange(0, failing.Count - 1).ToArray()) + " and " + failing[failing.Count - 1];
+            string why = "";
+            if (sameDetail && detail != null)
+            {
+                why = Friendly(detail);
+                int paren = why.IndexOf(" (");
+                if (paren > 0) why = why.Substring(0, paren);
+                why = " (" + why.ToLowerInvariant() + ")";
+            }
+            bool one = failing.Count == 1;
+            return names + (one ? " is" : " are") + " not answering" + why + " while the other web checks succeed. The connection is up, but anything that relies on "
+                + (one ? "that site" : "those sites") + " may be slow or fail to load.";
+        }
+
+        private void FillList(Schema schema, Sample s) { FillList(schema, s, null, null); }
+
+        private void FillList(Schema schema, Sample s, int[] tests, int[] oks)
         {
             list.BeginUpdate();
             if (list.Items.Count != schema.Defs.Length)
@@ -610,6 +746,7 @@ namespace InternetMonitor
                     it.SubItems.Add(d.Target);
                     it.SubItems.Add("");
                     it.SubItems.Add("");
+                    it.SubItems.Add("");
                     it.SubItems[1].ForeColor = Theme.Ink2;
                     it.SubItems[2].ForeColor = Theme.Ink2;
                     list.Items.Add(it);
@@ -620,6 +757,25 @@ namespace InternetMonitor
                 ListViewItem it = list.Items[i];
                 string result = "", time = "";
                 Color color = Theme.Muted;
+
+                // Share of this session's tests that succeeded. Updated even on rounds when the check was not due.
+                string rate = "";
+                Color rateColor = Theme.Ink2;
+                if (tests != null && i < tests.Length && tests[i] > 0)
+                {
+                    int fails = tests[i] - oks[i];
+                    double pct = 100.0 * oks[i] / tests[i];
+                    rate = fails == 0 ? "100%" : Math.Min(pct, 99.9).ToString("0.0") + "%";
+                    bool ignored = engine != null && ((schema.Defs[i].Kind == "HTTP" && engine.IsHttpExcluded(i))
+                        || (schema.Defs[i].Kind == "TCP" && engine.DirectBlockedByPolicy));
+                    if (ignored) rateColor = Theme.Muted;
+                    else if (pct < 99.0) rateColor = Theme.Critical;
+                    it.ToolTipText = fails == 0 ? "" : fails.ToString("N0") + " of " + tests[i].ToString("N0") + " tests failed in this session";
+                }
+                else if (s == null) it.ToolTipText = "";
+                if (it.SubItems[5].Text != rate) it.SubItems[5].Text = rate;
+                if (it.SubItems[5].ForeColor != rateColor) it.SubItems[5].ForeColor = rateColor;
+
                 if (s != null)
                 {
                     CheckResult r = s.R[i];
@@ -631,7 +787,12 @@ namespace InternetMonitor
                         else result = "Checked once every " + settings.Http[i].EverySec + " s";
                     }
                     else if (!r.Tested) result = schema.Defs[i].Kind == "PROXY" ? "No proxy configured" : "Not available";
-                    else if (r.Ok) { result = "OK"; time = r.Ms + " ms"; color = Theme.Good; }
+                    else if (r.Ok)
+                    {
+                        result = "OK"; time = r.Ms + " ms"; color = Theme.Good;
+                        // The filter is decrypting this site: worth seeing at a glance, because those are the ones an inspection fault hits.
+                        if (schema.Defs[i].Kind == "HTTP" && engine != null && engine.IsHttpInspected(i)) result = "OK · decrypted by filter";
+                    }
                     else
                     {
                         result = Friendly(r.Detail); color = Theme.Critical;
@@ -647,11 +808,16 @@ namespace InternetMonitor
             list.EndUpdate();
         }
 
-        private static string Friendly(string detail)
+        internal static string Friendly(string detail)
         {
             switch (detail)
             {
                 case "TIMEOUT": return "Timed out";
+                case "DNS_TIMEOUT": return "Name lookup timed out";
+                case "CONNECT_TIMEOUT": return "Could not connect (timed out)";
+                case "TLS_TIMEOUT": return "Secure handshake timed out";
+                case "TLS_RESET": return "Secure handshake dropped";
+                case "RESPONSE_TIMEOUT": return "Connected, but no reply";
                 case "DNS_FAIL": return "Name lookup failed";
                 case "PROXY_DNS_FAIL": return "Proxy name lookup failed";
                 case "CONNECT_FAIL": return "Could not connect";
@@ -674,7 +840,7 @@ namespace InternetMonitor
         private void OnStopped(bool timedOut)
         {
             clock.Stop();
-            cboInterval.Enabled = cboDuration.Enabled = chkAwake.Enabled = true;
+            cboAdapter.Enabled = cboInterval.Enabled = cboDuration.Enabled = chkAwake.Enabled = true;
             btnStart.Enabled = true;
             btnStart.Text = "Start monitoring";
             StyleButton(btnStart, true);
@@ -799,6 +965,8 @@ namespace InternetMonitor
                 if (d.Service) ctx.Service.Add(d.Key);
             }
             ctx.Traces = scope == "session" ? eng.TraceSnapshot() : store.ReadTraces(samples[0].Time.AddSeconds(-5), DateTime.Now);
+            ctx.Certs = scope == "session" ? eng.CertSnapshot() : store.ReadCerts(samples[0].Time.AddSeconds(-5), DateTime.Now);
+            ctx.TimeoutMs = settings.TimeoutMs;
             ctx.WifiWhyNot = Wifi.Allowed ? (Wifi.AccessDenied ? "Windows refused access" : "") : Wifi.WhyNot;
 
             NetInfo net = eng != null ? eng.Net : NetInfo.Detect();
@@ -807,7 +975,19 @@ namespace InternetMonitor
             env.Add(Pair("Computer", Environment.MachineName));
             env.Add(Pair("Signed-in user", Environment.UserDomainName + "\\" + Environment.UserName));
             env.Add(Pair("Windows", Environment.OSVersion.Version.ToString()));
-            if (net.AdapterName.Length > 0) env.Add(Pair("Network adapter", net.AdapterName + " (" + net.AdapterType + ")"));
+            bool chosen = eng != null && eng.AdapterId.Length > 0;
+            if (net.AdapterName.Length > 0)
+                env.Add(Pair("Network adapter", net.AdapterName + " (" + net.AdapterType + (chosen ? "; chosen in the window" : "; chosen by Windows") + ")"));
+            if (!chosen && eng != null)
+            {
+                // Two ways out and nobody said which to use: say so, because the results are a blend of both.
+                List<string> routes = new List<string>();
+                foreach (NetInfo n in NetInfo.All()) { if (n.Gateway != null) routes.Add(n.AdapterName + " (gateway " + n.Gateway + ")"); }
+                if (routes.Count > 1)
+                    ctx.Notes.Add("This computer has " + routes.Count + " network connections with a route to the internet: " + string.Join(", ", routes.ToArray())
+                        + ". The monitor was left on Automatic, so Windows decided which one each check went out through, and that can change from moment to moment. "
+                        + "To test one connection on its own, choose it under Network adapter before starting.");
+            }
             if (net.Gateway != null) env.Add(Pair("Default gateway", net.Gateway.ToString()));
             if (net.DnsServers.Count > 0)
             {
@@ -819,7 +999,7 @@ namespace InternetMonitor
             if (eng != null)
             {
                 HashSet<string> issuers = new HashSet<string>();
-                lock (eng.CertIssuers) { foreach (string iss in eng.CertIssuers.Values) issuers.Add(ShortIssuer(iss)); }
+                foreach (CertRecord cr in eng.CertSnapshot()) issuers.Add(ShortIssuer(cr.Issuer));
                 List<string> sites;
                 lock (eng.ServedFrom) { sites = new List<string>(eng.ServedFrom); }
                 if (sites.Count > 0)
