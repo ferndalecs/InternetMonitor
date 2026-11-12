@@ -735,7 +735,9 @@ function renderInspection() {
     el("th", { cls: "num", text: "Failed" }), el("th", { cls: "num", text: "Slow (over 1 s)" }),
     el("th", { cls: "num", text: "Lookup ms" }), el("th", { cls: "num", text: "Connect ms" }), el("th", { cls: "num", text: "Handshake ms" }),
     el("th", { cls: "num", text: "Slowest handshake" }), el("th", { text: "Failures happened while" })])]), tb])]));
-  c.appendChild(el("p", { cls: "small", text: "Lookup, connect and handshake figures are the typical (median) time for requests that succeeded." }));
+  c.appendChild(el("p", { cls: "small", text: "Lookup, connect and handshake figures are the typical (median) time for requests that succeeded."
+    + (I.viaProxy ? " Where this computer was using a proxy, each request goes to the proxy first. The proxy looks up the name of the website itself, "
+      + "so no lookup time is shown unless the proxy is set by name, and the connect time runs until the proxy gives its go-ahead for the site." : "") }));
   if (I.certLog && I.certLog.length) {
     var cb = el("tbody");
     I.certLog.forEach(function (r) {

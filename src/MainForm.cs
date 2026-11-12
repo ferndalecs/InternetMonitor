@@ -820,6 +820,14 @@ namespace InternetMonitor
                 case "RESPONSE_TIMEOUT": return "Connected, but no reply";
                 case "DNS_FAIL": return "Name lookup failed";
                 case "PROXY_DNS_FAIL": return "Proxy name lookup failed";
+                case "PROXY_DNS_TIMEOUT": return "Proxy name lookup timed out";
+                case "PROXY_CONFIG_TIMEOUT": return "Proxy settings lookup timed out";
+                case "PROXY_CONNECT_TIMEOUT": return "Could not connect to proxy (timed out)";
+                case "PROXY_CONNECT_FAIL": return "Could not connect to proxy";
+                case "PROXY_REFUSED": return "Proxy refused the connection";
+                case "PROXY_UNREACHABLE": return "Proxy unreachable";
+                case "TUNNEL_TIMEOUT": return "No go-ahead from proxy (timed out)";
+                case "TUNNEL_RESET": return "Proxy dropped the connection";
                 case "CONNECT_FAIL": return "Could not connect";
                 case "UNREACHABLE": return "Network unreachable";
                 case "REFUSED": return "Connection refused";
@@ -995,7 +1003,7 @@ namespace InternetMonitor
                 foreach (System.Net.IPAddress a in net.DnsServers) dns.Add(a.ToString());
                 env.Add(Pair("DNS servers", string.Join(", ", dns.ToArray())));
             }
-            env.Add(Pair("Proxy", proxy.Description));
+            env.Add(Pair("Proxy", proxy.Summary));
             if (eng != null)
             {
                 HashSet<string> issuers = new HashSet<string>();

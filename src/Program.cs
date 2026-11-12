@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Internet Monitor")]
 [assembly: AssemblyCompany("IT Support")]
 [assembly: AssemblyCopyright("")]
-[assembly: AssemblyVersion("2.4.0.0")]
-[assembly: AssemblyFileVersion("2.4.0.0")]
+[assembly: AssemblyVersion("2.4.1.0")]
+[assembly: AssemblyFileVersion("2.4.1.0")]
 // Opts in to modern .NET Framework behaviour (operating-system default TLS versions, etc.).
 [assembly: TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 

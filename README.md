@@ -80,6 +80,9 @@ The monitor is built to catch and prove this:
 - **It times each web request in stages.** A line fault stops the connection being made. An
   inspection fault looks different: the connection is made in a couple of milliseconds, then
   the secure handshake never completes. The stage is in the log for every request.
+  On a computer that uses a proxy the request is made through it, as a browser's is, and there
+  is one more stage: asking the proxy for a path to the site and waiting for its go-ahead. A
+  filter that decrypts at the proxy tends to stall there instead (`TUNNEL_TIMEOUT` in the log).
 - **It compares decrypted sites with ones that are not.** Gstatic (the address Android uses
   to test its connection) is normally left alone by filters, and the Microsoft check is plain
   HTTP, so both keep working during an inspection fault.
@@ -93,6 +96,10 @@ come round on a regular cycle.
 
 At least two decrypted sites must fail together before this conclusion is reached; one site
 failing alone is reported as Degraded.
+
+If the proxy asks for a sign-in, Windows' own web client makes the requests instead, because
+only it can sign in as the logged-on user. Certificates are still read for every site, but
+those requests cannot be timed in stages; the report's *Proxy* line says when this applies.
 
 It also records:
 

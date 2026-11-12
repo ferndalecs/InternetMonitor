@@ -56,7 +56,7 @@ namespace InternetMonitor
 
             // Web checks only: time spent in each stage, where failures happened, and whether the filter decrypts the site.
             public List<int> Dns = new List<int>(), Tcp = new List<int>(), Tls = new List<int>();
-            public int FailLookup, FailConnect, FailHandshake, FailReply, FailOther, Slow;
+            public int FailLookup, FailConnect, FailTunnel, FailHandshake, FailReply, FailOther, Slow;
             public int InspectedTests, InspectedFails;
             public bool Inspected { get { return InspectedTests * 2 > Tests; } }
         }
@@ -239,8 +239,9 @@ namespace InternetMonitor
             // ---- HTTPS inspection: what else was working in the rounds when a decrypted site failed ----
             int inspRounds = 0, inspFailRounds = 0, inspAllFailRounds = 0, inspRoundsWithControl = 0, inspRoundsControlOk = 0;
             int inspRoundsDirectTested = 0, inspRoundsDirectOk = 0, inspRoundsDnsTested = 0, inspRoundsDnsOk = 0, inspRoundsGwTested = 0, inspRoundsGwOk = 0;
-            int inspFailTotal = 0, inspFailHandshake = 0;
-            List<int> inspFailTcpMs = new List<int>();
+            int inspFailTotal = 0, inspFailHandshake = 0, inspFailTunnel = 0;
+            List<int> inspFailTcpMs = new List<int>(), inspFailTunnelTcpMs = new List<int>();
+            bool viaProxy = false;      // a proxy was configured for at least part of the period
 
             // ---- Wi-Fi: signal over time, time on each access point, moves between them ----
             int[] bWifi = new int[nb];
@@ -373,6 +374,7 @@ namespace InternetMonitor
                     if (!r.Tested) continue;
                     CheckAgg a = map[c];
                     a.Tests++;
+                    if (a.Kind == "PROXY") viaProxy = true;
                     if (a.Kind == "TCP") { rDirectTested = true; if (r.Ok) rDirectOk = true; }
                     else if (a.Kind == "DNS") { rDnsTested = true; rDnsOk = r.Ok; }
                     else if (a.Kind == "GW") { rGwTested = true; rGwOk = r.Ok; }
@@ -395,12 +397,15 @@ namespace InternetMonitor
                         else
                         {
                             string stage = StageOf(r.Detail);
-                            if (stage == "lookup") a.FailLookup++; else if (stage == "connect") a.FailConnect++;
+                            if (stage == "lookup") a.FailLookup++; else if (stage == "connect") a.FailConnect++; else if (stage == "tunnel") a.FailTunnel++;
                             else if (stage == "handshake") a.FailHandshake++; else if (stage == "reply") a.FailReply++; else a.FailOther++;
                             if (decrypted && !a.Service)
                             {
                                 inspFailTotal++;
                                 if (stage == "handshake") { inspFailHandshake++; if (r.TcpMs >= 0) inspFailTcpMs.Add(r.TcpMs); }
+                                // Through a proxy the wait can come one step earlier: the proxy has accepted the
+                                // connection (that is the time recorded) but not yet said the path to the site is open.
+                                else if (stage == "tunnel") { inspFailTunnel++; if (r.TcpMs >= 0) inspFailTunnelTcpMs.Add(r.TcpMs); }
                             }
                         }
                     }
@@ -697,6 +702,7 @@ namespace InternetMonitor
                 List<string> at = new List<string>();
                 if (a.FailLookup > 0) at.Add("name lookup " + a.FailLookup);
                 if (a.FailConnect > 0) at.Add("connecting " + a.FailConnect);
+                if (a.FailTunnel > 0) at.Add("waiting for the proxy\u2019s go-ahead " + a.FailTunnel);
                 if (a.FailHandshake > 0) at.Add("secure handshake " + a.FailHandshake);
                 if (a.FailReply > 0) at.Add("waiting for reply " + a.FailReply);
                 if (a.FailOther > 0) at.Add("other " + a.FailOther);
@@ -752,6 +758,16 @@ namespace InternetMonitor
                             + ". A line fault stops the connection being made at all; a connection that is made at once and then never completes its handshake "
                             + "is waiting on whatever is decrypting it.");
                     }
+                    if (inspFailTunnel > 0)
+                    {
+                        inspFailTunnelTcpMs.Sort();
+                        string share = Of(inspFailTunnel, inspFailTotal);
+                        proof.Add(char.ToUpperInvariant(share[0]) + share.Substring(1) + " failures happened while waiting for the proxy\u2019s go-ahead, after the proxy had accepted the connection"
+                            + (inspFailTunnelTcpMs.Count > 0 ? " (typically in " + (int)Math.Round(Percentile(inspFailTunnelTcpMs, 0.5)) + " ms)" : "")
+                            + ". To reach a secure site through a proxy, a browser first asks the proxy to open a path to that site and waits for its go-ahead. "
+                            + "A line fault stops the proxy being reached at all. A proxy that accepts the connection at once and then keeps the sites it decrypts waiting, "
+                            + "while it lets other sites through, is being held up by its own HTTPS inspection.");
+                    }
                     bool strong = inspFailRounds >= 3 && (inspRoundsWithControl == 0 || inspRoundsControlOk * 10 >= inspRoundsWithControl * 9)
                         && (plainTests == 0 || plainFails * 20 <= plainTests) && decFails * 1000 >= decTests;
                     if (strong)
@@ -759,6 +775,7 @@ namespace InternetMonitor
                             + decFails.ToString("N0", CultureInfo.InvariantCulture) + " times while sites that are not decrypted"
                             + (plainTests > 0 ? " failed " + plainFails.ToString("N0", CultureInfo.InvariantCulture) + " times" : " were not available to compare")
                             + (inspFailHandshake > 0 ? ", and " + Of(inspFailHandshake, inspFailTotal) + " failures were in the secure handshake after the connection had already been made" : "")
+                            + (inspFailTunnel > 0 ? ", and " + Of(inspFailTunnel, inspFailTotal) + " failures came while waiting for the proxy\u2019s go-ahead after it had already accepted the connection" : "")
                             + ". The section \u201cHTTPS inspection\u201d sets out the evidence.");
 
                     // Do the faults come round on a timer?
@@ -779,6 +796,7 @@ namespace InternetMonitor
             {
                 Dictionary<string, object> insp = new Dictionary<string, object>();
                 insp["active"] = inspectionActive;
+                insp["viaProxy"] = viaProxy;
                 insp["issuers"] = filterIssuers;
                 insp["sites"] = stageRows;
                 insp["proof"] = proof;
@@ -1142,8 +1160,10 @@ namespace InternetMonitor
         {
             switch (detail ?? "")
             {
-                case "DNS_FAIL": case "DNS_TIMEOUT": case "PROXY_DNS_FAIL": return "lookup";
-                case "CONNECT_FAIL": case "CONNECT_TIMEOUT": case "REFUSED": case "UNREACHABLE": return "connect";
+                case "DNS_FAIL": case "DNS_TIMEOUT": case "PROXY_DNS_FAIL": case "PROXY_DNS_TIMEOUT": return "lookup";
+                case "CONNECT_FAIL": case "CONNECT_TIMEOUT": case "REFUSED": case "UNREACHABLE":
+                case "PROXY_CONNECT_FAIL": case "PROXY_CONNECT_TIMEOUT": case "PROXY_REFUSED": case "PROXY_UNREACHABLE": return "connect";
+                case "TUNNEL_TIMEOUT": case "TUNNEL_RESET": return "tunnel";
                 case "TLS_TIMEOUT": case "TLS_RESET": case "TLS_ERROR": return "handshake";
                 case "RESPONSE_TIMEOUT": case "CONNECTION_RESET": return "reply";
                 default: return "other";

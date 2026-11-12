@@ -11,6 +11,7 @@ using System.Net.Cache;
 using System.Net.NetworkInformation;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -20,7 +21,7 @@ namespace InternetMonitor
     internal static class AppInfo
     {
         public const string Name = "Internet Monitor";
-        public const string Version = "2.4.0";
+        public const string Version = "2.4.1";
     }
 
     // ------------------------------------------------------------------
@@ -563,11 +564,8 @@ namespace InternetMonitor
             ProxyInfo info = new ProxyInfo();
             try
             {
-                IWebProxy p = WebRequest.DefaultWebProxy;
-                Uri target = new Uri(sampleUrl);
-                if (p == null || p.IsBypassed(target)) return info;
-                Uri u = p.GetProxy(target);
-                if (u == null || u == target || string.Equals(u.Host, target.Host, StringComparison.OrdinalIgnoreCase)) return info;
+                Uri u = For(new Uri(sampleUrl));
+                if (u == null) return info;
                 info.Explicit = true;
                 info.Host = u.Host;
                 info.Port = u.Port;
@@ -575,6 +573,46 @@ namespace InternetMonitor
             }
             catch { }
             return info;
+        }
+
+        /// <summary>
+        /// The proxy Windows would send this address through, or null when it goes straight out
+        /// (no proxy set, or the address is on the proxy's bypass list).
+        /// </summary>
+        public static Uri For(Uri site)
+        {
+            IWebProxy p = WebRequest.DefaultWebProxy;
+            if (p == null) return null;
+            // Asked once only: with an automatic configuration script every question runs the script.
+            // An address that bypasses the proxy comes back as itself.
+            Uri u = p.GetProxy(site);
+            if (u == null || u == site || string.Equals(u.Host, site.Host, StringComparison.OrdinalIgnoreCase)) return null;
+            return u;
+        }
+
+        // Proxies that have asked for a sign-in during this run. A request timed in stages cannot sign in
+        // (only Windows' own web client can do that as the logged-on user), so from the first such answer
+        // onwards requests to that proxy are handed to it instead.
+        private static readonly HashSet<string> signInProxies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public static bool SignInNeeded(string host, int port)
+        {
+            lock (signInProxies) { return signInProxies.Contains(host + ":" + port); }
+        }
+
+        public static void NoteSignIn(string host, int port)
+        {
+            lock (signInProxies) { signInProxies.Add(host + ":" + port); }
+        }
+
+        /// <summary>The description, plus what has been learnt about the proxy since monitoring began.</summary>
+        public string Summary
+        {
+            get
+            {
+                if (!Explicit || !SignInNeeded(Host, Port)) return Description;
+                return Description + ". It asks for a sign-in, so Windows makes the web requests and they cannot be timed in stages";
+            }
         }
     }
 
@@ -635,22 +673,6 @@ namespace InternetMonitor
             return info;
         }
 
-        /// <summary>For the case where only the certificate is to hand (requests made through a proxy).</summary>
-        public static CertInfo From(X509Certificate certificate)
-        {
-            if (certificate == null) return null;
-            try
-            {
-                using (X509Chain chain = new X509Chain())
-                {
-                    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                    bool ok = chain.Build(new X509Certificate2(certificate));
-                    return From(certificate, chain, ok ? SslPolicyErrors.None : SslPolicyErrors.RemoteCertificateChainErrors);
-                }
-            }
-            catch { return null; }
-        }
-
         // Public authorities reach Windows through Microsoft's root programme, which files them under
         // "Third-Party Root Certification Authorities". A root that is trusted but not filed there was
         // installed by the organisation (Group Policy, device management or by hand).
@@ -693,13 +715,15 @@ namespace InternetMonitor
     /// One web request, timed in stages: name lookup, connecting, secure handshake, reply.
     /// Knowing the stage is what separates "the line is down" (cannot connect) from
     /// "the filter's HTTPS inspection has stalled" (connects at once, handshake never completes).
+    /// Where Windows has a proxy set, the request is made through it the way a browser's is, with
+    /// one more stage: asking the proxy for a path to the site and waiting for its go-ahead.
     /// </summary>
     internal sealed class HttpProbe
     {
         private readonly HttpTarget target;
         private readonly int timeoutMs;
         private readonly IPAddress bindTo;      // local address of the chosen adapter; null = let Windows choose
-        private readonly bool viaProxy;         // an explicit proxy is configured: let .NET handle it (no stage timings)
+        private readonly bool proxyInUse;       // Windows has a proxy set: ask it which way this address goes
         private volatile HttpWebRequest request;
         private volatile Socket socket;
         private volatile string stage = "DNS";
@@ -712,16 +736,19 @@ namespace InternetMonitor
         public CertInfo Cert;        // null for plain HTTP, or when the handshake never got as far as a certificate
         public string CertIssuer { get { return Cert != null ? Cert.Issuer : null; } }
 
-        public HttpProbe(HttpTarget target, int timeoutMs, IPAddress bindTo, bool viaProxy)
+        public HttpProbe(HttpTarget target, int timeoutMs, IPAddress bindTo, bool proxyInUse)
         {
             this.target = target;
             this.timeoutMs = timeoutMs;
             this.bindTo = bindTo;
-            this.viaProxy = viaProxy;
+            this.proxyInUse = proxyInUse;
         }
 
         /// <summary>The failure to record when the hard deadline passes: names the stage that was in progress.</summary>
-        public string StageTimeout { get { return viaProxy ? "TIMEOUT" : stage + "_TIMEOUT"; } }
+        public string StageTimeout
+        {
+            get { string at = stage; return at.Length == 0 ? "TIMEOUT" : at + "_TIMEOUT"; }
+        }
 
         public void Abort()
         {
@@ -732,34 +759,60 @@ namespace InternetMonitor
 
         public CheckResult Run()
         {
-            return viaProxy ? RunViaProxy() : RunStaged();
+            Stopwatch sw = Stopwatch.StartNew();
+            Uri proxy = null;
+            if (proxyInUse)
+            {
+                // Windows can send some addresses through the proxy and others straight out (its bypass
+                // list, or an automatic configuration script), so each site is asked about separately.
+                stage = "PROXY_CONFIG";
+                try { proxy = ProxyInfo.For(new Uri(target.Url)); } catch { }
+                if (proxy != null && ProxyInfo.SignInNeeded(proxy.Host, proxy.Port)) return RunSignedIn(sw);
+            }
+
+            bool signInWanted;
+            CheckResult r = RunStaged(sw, proxy, out signInWanted);
+            if (!signInWanted) return r;
+
+            // The proxy wants to know who is asking. Windows' own web client can answer that as the
+            // logged-on user, so this request and every later one to that proxy is handed to it.
+            ProxyInfo.NoteSignIn(proxy.Host, proxy.Port);
+            return RunSignedIn(sw);
         }
 
-        // ---------------------------------------------------------------- direct, stage by stage
-        private CheckResult RunStaged()
+        // ---------------------------------------------------------------- stage by stage
+        // proxy == null: straight to the site. Otherwise through that proxy.
+        private CheckResult RunStaged(Stopwatch sw, Uri proxy, out bool signInWanted)
         {
-            Stopwatch sw = Stopwatch.StartNew();
+            signInWanted = false;
+            bool viaProxy = proxy != null;
             int dnsMs = -1, tcpMs = -1, tlsMs = -1;
             Socket s = null;
             Stream stream = null;
             try
             {
+                stage = viaProxy ? "PROXY_DNS" : "DNS";
                 Uri uri = new Uri(target.Url);
                 bool https = uri.Scheme == "https";
 
-                // 1. name lookup (by Windows, exactly as a browser's would be)
-                stage = "DNS";
+                // 1. name lookup (by Windows, exactly as a browser's would be). Through a proxy it is the
+                //    proxy's name this computer looks up; the proxy looks the website up itself.
+                long lookupStart = sw.ElapsedMilliseconds;
+                string connectHost = viaProxy ? proxy.Host : uri.Host;
+                int connectPort = viaProxy ? proxy.Port : uri.Port;
                 IPAddress literal;
-                IPAddress[] found = IPAddress.TryParse(uri.Host, out literal) ? new IPAddress[] { literal } : Dns.GetHostAddresses(uri.DnsSafeHost);
-                dnsMs = (int)sw.ElapsedMilliseconds;
+                bool numeric = IPAddress.TryParse(connectHost, out literal);
+                IPAddress[] found = numeric ? new IPAddress[] { literal } : Dns.GetHostAddresses(viaProxy ? proxy.DnsSafeHost : uri.DnsSafeHost);
+                // A proxy given as a number involves no lookup at all, so no time is recorded for one.
+                if (!(viaProxy && numeric)) dnsMs = (int)(sw.ElapsedMilliseconds - lookupStart);
                 List<IPAddress> addresses = new List<IPAddress>();
                 AddressFamily wanted = bindTo != null ? bindTo.AddressFamily : AddressFamily.InterNetwork;
                 foreach (IPAddress a in found) { if (a.AddressFamily == wanted) addresses.Add(a); }
                 if (bindTo == null) { foreach (IPAddress a in found) { if (a.AddressFamily != wanted) addresses.Add(a); } }
-                if (addresses.Count == 0) return Done(CheckResult.Fail("DNS_FAIL", sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
+                if (addresses.Count == 0) return Done(CheckResult.Fail(viaProxy ? "PROXY_DNS_FAIL" : "DNS_FAIL", sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
 
                 // 2. connect (a second address is tried if the first refuses, as a browser would)
-                stage = "CONNECT";
+                stage = viaProxy ? "PROXY_CONNECT" : "CONNECT";
                 long connectStart = sw.ElapsedMilliseconds;
                 SocketError lastError = SocketError.TimedOut;
                 for (int i = 0; i < addresses.Count && i < 2 && s == null; i++)
@@ -771,8 +824,10 @@ namespace InternetMonitor
                     try
                     {
                         candidate.NoDelay = true;
-                        if (bindTo != null && bindTo.AddressFamily == addresses[i].AddressFamily) candidate.Bind(new IPEndPoint(bindTo, 0));
-                        IAsyncResult ar = candidate.BeginConnect(new IPEndPoint(addresses[i], uri.Port), null, null);
+                        // (A proxy running on this computer itself is not reached through any adapter, and cannot be reached from one's address.)
+                        if (bindTo != null && bindTo.AddressFamily == addresses[i].AddressFamily && !IPAddress.IsLoopback(addresses[i]))
+                            candidate.Bind(new IPEndPoint(bindTo, 0));
+                        IAsyncResult ar = candidate.BeginConnect(new IPEndPoint(addresses[i], connectPort), null, null);
                         if (!ar.AsyncWaitHandle.WaitOne(left, false)) { lastError = SocketError.TimedOut; candidate.Close(); continue; }
                         candidate.EndConnect(ar);
                         s = candidate;
@@ -784,12 +839,38 @@ namespace InternetMonitor
                     string why = lastError == SocketError.TimedOut ? "CONNECT_TIMEOUT"
                                : lastError == SocketError.ConnectionRefused ? "REFUSED"
                                : (lastError == SocketError.NetworkUnreachable || lastError == SocketError.HostUnreachable) ? "UNREACHABLE" : "CONNECT_FAIL";
-                    return Done(CheckResult.Fail(why, sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
+                    return Done(CheckResult.Fail(viaProxy ? "PROXY_" + why : why, sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
                 }
                 tcpMs = (int)(sw.ElapsedMilliseconds - connectStart);
 
                 NetworkStream ns = new NetworkStream(s, true);
                 stream = ns;
+
+                // 2b. through a proxy, a secure site needs a path opened to it first: the proxy is asked to
+                //     connect onward and says when it has. The connect time then runs up to that go-ahead,
+                //     so it still means "how long until the handshake could begin".
+                if (viaProxy && https)
+                {
+                    stage = "TUNNEL";
+                    ns.ReadTimeout = ns.WriteTimeout = Math.Max(1, timeoutMs - (int)sw.ElapsedMilliseconds);
+                    string authority = uri.Host + ":" + uri.Port;
+                    byte[] ask = Encoding.ASCII.GetBytes("CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority
+                        + "\r\nUser-Agent: " + UserAgent + "\r\nProxy-Connection: Keep-Alive\r\n\r\n");
+                    ns.Write(ask, 0, ask.Length);
+                    int goAhead = ReadGoAhead(ns);
+                    if (goAhead == 407)
+                    {
+                        signInWanted = true;
+                        return Done(CheckResult.Fail("PROXY_AUTH", sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
+                    }
+                    if (goAhead < 200 || goAhead > 299)
+                    {
+                        // A refusal: the filter blocks the site, or the proxy could not reach it.
+                        string refused = goAhead >= 300 && goAhead < 400 ? "REDIRECTED" : (StatusFailure(goAhead) ?? "UNEXPECTED_CONTENT");
+                        return Done(CheckResult.Fail(refused, sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
+                    }
+                    tcpMs = (int)(sw.ElapsedMilliseconds - connectStart);
+                }
 
                 // 3. secure handshake
                 if (https)
@@ -812,8 +893,12 @@ namespace InternetMonitor
                 stage = "RESPONSE";
                 ns.ReadTimeout = ns.WriteTimeout = Math.Max(1, timeoutMs - (int)sw.ElapsedMilliseconds);
                 string path = uri.PathAndQuery + (uri.PathAndQuery.IndexOf('?') >= 0 ? "&" : "?") + "_cb=" + DateTime.UtcNow.Ticks;
-                string head = "GET " + path + " HTTP/1.1\r\nHost: " + (uri.IsDefaultPort ? uri.Host : uri.Host + ":" + uri.Port)
-                    + "\r\nUser-Agent: " + UserAgent + "\r\nAccept: */*\r\nCache-Control: no-cache\r\nPragma: no-cache\r\nConnection: close\r\n\r\n";
+                string site = uri.IsDefaultPort ? uri.Host : uri.Host + ":" + uri.Port;
+                // A plain (not secure) request has no path opened for it: the proxy is handed the whole address instead.
+                bool handedToProxy = viaProxy && !https;
+                string head = "GET " + (handedToProxy ? "http://" + site + path : path) + " HTTP/1.1\r\nHost: " + site
+                    + "\r\nUser-Agent: " + UserAgent + "\r\nAccept: */*\r\nCache-Control: no-cache\r\nPragma: no-cache\r\n"
+                    + (handedToProxy ? "Proxy-Connection: close\r\n" : "") + "Connection: close\r\n\r\n";
                 byte[] send = Encoding.ASCII.GetBytes(head);
                 stream.Write(send, 0, send.Length);
                 stream.Flush();
@@ -824,6 +909,7 @@ namespace InternetMonitor
                     return Done(CheckResult.Fail("UNEXPECTED_CONTENT", sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
                 sw.Stop();
 
+                if (handedToProxy && code == 407) signInWanted = true;
                 string bad = StatusFailure(code);
                 if (bad != null) return Done(CheckResult.Fail(bad, sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
                 return Done(Judge(code, body, sw.ElapsedMilliseconds), dnsMs, tcpMs, tlsMs);
@@ -854,13 +940,33 @@ namespace InternetMonitor
             bool timedOut = aborted || (se != null && se.SocketErrorCode == SocketError.TimedOut);
             string at = stage;
             if (at == "DNS") return timedOut ? "DNS_TIMEOUT" : "DNS_FAIL";
+            if (at == "PROXY_DNS") return timedOut ? "PROXY_DNS_TIMEOUT" : "PROXY_DNS_FAIL";
             if (at == "CONNECT") return timedOut ? "CONNECT_TIMEOUT" : "CONNECT_FAIL";
+            if (at == "PROXY_CONNECT") return timedOut ? "PROXY_CONNECT_TIMEOUT" : "PROXY_CONNECT_FAIL";
+            if (at == "TUNNEL") return timedOut ? "TUNNEL_TIMEOUT" : "TUNNEL_RESET";
             if (at == "TLS")
             {
                 if (timedOut) return "TLS_TIMEOUT";
                 return ex is System.Security.Authentication.AuthenticationException ? "TLS_ERROR" : "TLS_RESET";
             }
             return timedOut ? "RESPONSE_TIMEOUT" : "CONNECTION_RESET";
+        }
+
+        // The proxy's answer to "open a path to this site": returns its status number (0 if it did not
+        // answer in HTTP at all). Read one byte at a time, so that nothing belonging to the handshake
+        // that follows is taken by mistake.
+        private static int ReadGoAhead(Stream stream)
+        {
+            byte[] buf = new byte[8192];
+            int n = 0;
+            while (n < buf.Length)
+            {
+                if (stream.Read(buf, n, 1) <= 0) throw new IOException("The proxy closed the connection before answering.");
+                n++;
+                if (n >= 4 && buf[n - 4] == '\r' && buf[n - 3] == '\n' && buf[n - 2] == '\r' && buf[n - 1] == '\n') break;
+            }
+            Match status = Regex.Match(Encoding.ASCII.GetString(buf, 0, n), @"^HTTP/\d\.\d\s+(\d{3})");
+            return status.Success ? int.Parse(status.Groups[1].Value) : 0;
         }
 
         // Reads the status line and headers, and the body too when the check needs to look inside it.
@@ -923,25 +1029,34 @@ namespace InternetMonitor
             return CheckResult.Pass(ms);
         }
 
-        // ---------------------------------------------------------------- through a configured proxy
-        private CheckResult RunViaProxy()
+        // ---------------------------------------------------------------- through a proxy that asks for a sign-in
+        // Windows' own web client makes the request, because it can sign in to the proxy as the logged-on
+        // user. The price is that the request cannot be timed in stages: there is one overall time.
+        private CheckResult RunSignedIn(Stopwatch sw)
         {
-            Stopwatch sw = Stopwatch.StartNew();
+            stage = "";
+            sw.Start();
             try
             {
+                int left = Math.Max(1, timeoutMs - (int)sw.ElapsedMilliseconds);
                 string url = target.Url + (target.Url.IndexOf('?') >= 0 ? "&" : "?") + "_cb=" + DateTime.UtcNow.Ticks;
                 HttpWebRequest r = (HttpWebRequest)WebRequest.Create(url);
                 request = r;
                 r.Method = "GET";
-                r.Timeout = timeoutMs;
-                r.ReadWriteTimeout = timeoutMs;
+                r.Timeout = left;
+                r.ReadWriteTimeout = left;
                 r.KeepAlive = false;              // fresh connection every time: tests the whole path
                 r.AllowAutoRedirect = false;      // a redirect means a block page or captive portal
                 r.UserAgent = UserAgent;
                 r.CachePolicy = new RequestCachePolicy(RequestCacheLevel.NoCacheNoStore);
                 r.Headers[HttpRequestHeader.CacheControl] = "no-cache";
-                // Set every time (and cleared when on automatic): .NET keeps one ServicePoint per site between runs.
+                // Set every time (and cleared when on automatic): .NET keeps the proxy's ServicePoint between runs.
                 r.ServicePoint.BindIPEndPointDelegate = bindTo != null ? new BindIPEndPoint(Bind) : null;
+                // The certificate is taken from this request's own handshake. It must not be read back from
+                // the ServicePoint afterwards: behind a proxy every site shares the proxy's one ServicePoint,
+                // which only remembers the last certificate any of them saw.
+                Asking.Add(r, this);
+                r.ServerCertificateValidationCallback = CertificateSeen;
 
                 int code;
                 string body;
@@ -951,12 +1066,6 @@ namespace InternetMonitor
                     body = ReadBody(resp);
                 }
                 sw.Stop();
-
-                try
-                {
-                    if (r.ServicePoint != null && r.ServicePoint.Certificate != null) Cert = CertInfo.From(r.ServicePoint.Certificate);
-                }
-                catch { }
                 return Done(Judge(code, body, sw.ElapsedMilliseconds), -1, -1, -1);
             }
             catch (WebException ex)
@@ -971,11 +1080,29 @@ namespace InternetMonitor
             }
         }
 
+        // One callback shared by every request, on purpose: .NET keeps a separate pool of connections for
+        // each different callback object, so a new one per request would leave a trail of empty pools.
+        // The request it is called for is looked up here to find the check that is waiting on it.
+        private static readonly RemoteCertificateValidationCallback CertificateSeen = new RemoteCertificateValidationCallback(OnCertificate);
+        private static readonly ConditionalWeakTable<HttpWebRequest, HttpProbe> Asking = new ConditionalWeakTable<HttpWebRequest, HttpProbe>();
+
+        private static bool OnCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors)
+        {
+            try
+            {
+                HttpWebRequest r = sender as HttpWebRequest;
+                HttpProbe probe;
+                if (r != null && Asking.TryGetValue(r, out probe)) probe.Cert = CertInfo.From(certificate, chain, errors);
+            }
+            catch { }
+            return errors == SslPolicyErrors.None;      // accept exactly what Windows would have accepted
+        }
+
         // Makes the connection leave from the chosen adapter's address, which is what makes
         // Windows send it out through that adapter.
         private IPEndPoint Bind(ServicePoint servicePoint, IPEndPoint remote, int retryCount)
         {
-            return bindTo != null && remote.AddressFamily == bindTo.AddressFamily ? new IPEndPoint(bindTo, 0) : null;
+            return bindTo != null && remote.AddressFamily == bindTo.AddressFamily && !IPAddress.IsLoopback(remote.Address) ? new IPEndPoint(bindTo, 0) : null;
         }
 
         private static string ReadBody(HttpWebResponse resp)
@@ -1032,7 +1159,9 @@ namespace InternetMonitor
             {
                 IPAddress ip;
                 bool literal = IPAddress.TryParse(host, out ip);
-                if (bindTo != null && (!literal || ip.AddressFamily == bindTo.AddressFamily)) client = new TcpClient(new IPEndPoint(bindTo, 0));
+                // This computer itself (a proxy running locally) is not reached through any adapter.
+                bool thisComputer = literal ? IPAddress.IsLoopback(ip) : string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase);
+                if (bindTo != null && !thisComputer && (!literal || ip.AddressFamily == bindTo.AddressFamily)) client = new TcpClient(new IPEndPoint(bindTo, 0));
                 else client = literal ? new TcpClient(ip.AddressFamily) : new TcpClient();
                 IAsyncResult ar = client.BeginConnect(host, port, null, null);
                 bool done = ar.AsyncWaitHandle.WaitOne(timeoutMs, false);
