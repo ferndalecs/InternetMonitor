@@ -189,7 +189,7 @@ namespace InternetMonitor
         private ListView list;
         private ComboBox cboInterval, cboDuration, cboAdapter;
         private readonly List<string> adapterIds = new List<string>();   // one per cboAdapter item; "" = automatic
-        private CheckBox chkAwake;
+        private CheckBox chkAwake, chkTop;
         private Button btnStart, btnReport, btnFolder;
         private Label lblFooter;
         private ContextMenuStrip reportMenu;
@@ -346,10 +346,20 @@ namespace InternetMonitor
 
             chkAwake = new CheckBox();
             chkAwake.Text = "Keep this computer awake while monitoring";
-            chkAwake.SetBounds(18, 670, 300, 24);
+            chkAwake.SetBounds(18, 660, 300, 20);
             chkAwake.Checked = settings.KeepAwake;
             chkAwake.ForeColor = Theme.Ink2;
             Controls.Add(chkAwake);
+
+            // About the window rather than the run, so unlike the options above it can be changed at any time.
+            chkTop = new CheckBox();
+            chkTop.Text = "Keep this window on top";
+            chkTop.SetBounds(18, 680, 300, 20);
+            chkTop.Checked = settings.KeepOnTop;
+            chkTop.ForeColor = Theme.Ink2;
+            chkTop.CheckedChanged += delegate { TopMost = chkTop.Checked; };
+            TopMost = chkTop.Checked;
+            Controls.Add(chkTop);
 
             btnFolder = MakeButton("Open folder", 368, 664, 112, false);
             btnFolder.Click += delegate { OpenPath(store.Root); };
@@ -402,7 +412,7 @@ namespace InternetMonitor
             // (it scrolls), so the Start button can never end up off-screen.
             listCard.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
-            foreach (Control c in new Control[] { l0, cboAdapter, l1, l2, cboInterval, cboDuration, chkAwake, btnFolder, btnReport, btnStart, lblFooter })
+            foreach (Control c in new Control[] { l0, cboAdapter, l1, l2, cboInterval, cboDuration, chkAwake, chkTop, btnFolder, btnReport, btnStart, lblFooter })
                 c.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             int chrome = Height - ClientSize.Height;
             int room = Screen.FromPoint(Cursor.Position).WorkingArea.Height - chrome - (int)(8 * k);
