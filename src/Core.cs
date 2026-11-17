@@ -21,7 +21,7 @@ namespace InternetMonitor
     internal static class AppInfo
     {
         public const string Name = "Internet Monitor";
-        public const string Version = "2.4.1";
+        public const string Version = "2.4.2";
     }
 
     // ------------------------------------------------------------------
@@ -222,6 +222,7 @@ namespace InternetMonitor
         public string DefaultInterval = "adaptive";
         public int DefaultDurationMinutes = 0;
         public bool KeepAwake = true;
+        public bool KeepOnTop = false;  // whether the window starts off in front of other windows
         public List<HttpTarget> Http = new List<HttpTarget>();
         public List<TcpTarget> Tcp = new List<TcpTarget>();
         public string LoadedFrom = "";
@@ -279,6 +280,8 @@ namespace InternetMonitor
                                 break;
                             case "keepawake":
                                 s.KeepAwake = IsTrue(val); break;
+                            case "keepontop":
+                                s.KeepOnTop = IsTrue(val); break;
                             case "http":
                                 HttpTarget h = ParseHttp(val);
                                 if (h != null) http.Add(h); else s.Warnings.Add("Ignored Http line: " + val);

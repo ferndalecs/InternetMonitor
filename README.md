@@ -22,7 +22,8 @@ software (AppLocker / WDAC), allow it by file hash or build it yourself from thi
 1. Pick **Check frequency** and **Run for**, then press **Start monitoring**.
    On a computer with two network connections, also pick the **Network adapter** to test
    (see [Two network connections](#two-network-connections) below).
-2. Leave the window open. The status light, figures and chart update live.
+2. Leave the window open. The status light, figures and chart update live. Tick **Keep this
+   window on top** to keep it in front of your other windows; that can be changed at any time.
 3. Press **Stop monitoring**, or let the run finish. A report is saved and offered to you.
 
 **View report** can also build a report from saved logs (today, last 7 or 30 days), and a

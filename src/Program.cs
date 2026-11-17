@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Internet Monitor")]
 [assembly: AssemblyCompany("IT Support")]
 [assembly: AssemblyCopyright("")]
-[assembly: AssemblyVersion("2.4.1.0")]
-[assembly: AssemblyFileVersion("2.4.1.0")]
+[assembly: AssemblyVersion("2.4.2.0")]
+[assembly: AssemblyFileVersion("2.4.2.0")]
 // Opts in to modern .NET Framework behaviour (operating-system default TLS versions, etc.).
 [assembly: TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
@@ -22,6 +22,10 @@ namespace InternetMonitor
 {
     internal static class Program
     {
+        // The two messages this file shows have no window to belong to, so each asks to be kept
+        // in front. Otherwise it could open behind a monitor window that is set to stay on top.
+        private const MessageBoxOptions InFront = (MessageBoxOptions)0x40000;   // MB_TOPMOST
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -37,7 +41,8 @@ namespace InternetMonitor
             {
                 if (!first)
                 {
-                    MessageBox.Show("Internet Monitor is already running.\n\nLook for it on the taskbar.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show("Internet Monitor is already running.\n\nLook for it on the taskbar.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information,
+                        MessageBoxDefaultButton.Button1, InFront);
                     return 1;
                 }
 
@@ -81,7 +86,8 @@ namespace InternetMonitor
             string file = Path.Combine(Path.GetTempPath(), "InternetMonitor-error.txt");
             try { File.WriteAllText(file, DateTime.Now + Environment.NewLine + text); } catch { }
             MessageBox.Show("Internet Monitor ran into a problem and needs to close.\n\n" + (ex == null ? "" : ex.Message)
-                + "\n\nDetails were saved to:\n" + file, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                + "\n\nDetails were saved to:\n" + file, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error,
+                MessageBoxDefaultButton.Button1, InFront);
             Environment.Exit(2);
         }
     }
